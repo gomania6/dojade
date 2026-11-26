@@ -330,7 +330,8 @@ class GtfsImporter(
             serviceId = serviceId,
             tripHeadsign = h.col(c, "trip_headsign"),
             directionId = h.col(c, "direction_id").toIntOrNull() ?: 0,
-            shapeId = h.col(c, "shape_id")
+            shapeId = h.col(c, "shape_id"),
+            wheelchairAccessible = h.col(c, "wheelchair_accessible").toIntOrNull() ?: 0
         )
     }
 

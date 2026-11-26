@@ -8,6 +8,7 @@ import pl.poznan.offdojade.data.gtfs.GtfsImporter
 import pl.poznan.offdojade.data.gtfs.PrebuiltDbDownloader
 import pl.poznan.offdojade.data.local.DatabaseHolder
 import pl.poznan.offdojade.data.local.PreferencesRepository
+import pl.poznan.offdojade.data.location.AddressSearchProvider
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.data.realtime.GtfsRtClient
@@ -18,6 +19,8 @@ import pl.poznan.offdojade.ui.details.RouteDetailsViewModel
 import pl.poznan.offdojade.ui.home.HomeViewModel
 import pl.poznan.offdojade.ui.onboarding.OnboardingViewModel
 import pl.poznan.offdojade.ui.results.RouteResultsViewModel
+import pl.poznan.offdojade.ui.settings.SettingsViewModel
+import pl.poznan.offdojade.ui.timetables.TimetablesViewModel
 import java.util.concurrent.TimeUnit
 
 val appModule = module {
@@ -32,6 +35,7 @@ val appModule = module {
     single { DatabaseHolder(androidContext()) }
     single { PreferencesRepository(androidContext()) }
     single { LocationProvider(androidContext()) }
+    single { AddressSearchProvider(androidContext(), get()) }
     single { MapDownloader(androidContext(), get()) }
     single { PrebuiltDbDownloader(androidContext(), get(), get(), get()) }
     single { GtfsImporter(get(), get(), get()) }
@@ -41,7 +45,9 @@ val appModule = module {
     single { TransitGraphRepository(get()) }
 
     viewModel { OnboardingViewModel(get(), get(), get(), get(), get()) }
-    viewModel { HomeViewModel(get(), get(), get(), get(), get()) }
-    viewModel { RouteResultsViewModel(get(), get(), get(), get()) }
+    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get()) }
+    viewModel { RouteResultsViewModel(get(), get(), get(), get(), get()) }
     viewModel { RouteDetailsViewModel(get(), get(), get()) }
+    viewModel { SettingsViewModel(get()) }
+    viewModel { TimetablesViewModel(get()) }
 }

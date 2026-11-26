@@ -97,7 +97,9 @@ data class TripEntity(
     @ColumnInfo(name = "service_id") val serviceId: String,
     @ColumnInfo(name = "trip_headsign") val tripHeadsign: String,
     @ColumnInfo(name = "direction_id") val directionId: Int,
-    @ColumnInfo(name = "shape_id") val shapeId: String
+    @ColumnInfo(name = "shape_id") val shapeId: String,
+    /** GTFS wheelchair_accessible: 0 = unknown, 1 = low-floor / accessible, 2 = not accessible */
+    @ColumnInfo(name = "wheelchair_accessible", defaultValue = "0") val wheelchairAccessible: Int = 0
 )
 
 @Entity(

@@ -95,4 +95,25 @@ class ZtmTicketCalculatorTest {
         assertEquals(CheapestTicketChoice.TIME_TICKET, longRec.cheapestChoice)
         assertEquals("Зоны: A + B", longRec.zonesBadgeText)
     }
+
+    @Test
+    fun ulgowy50Percent_halvesTimeTicketsAndPekaAndRespects18And9PlnCaps() {
+        // Обычный потолок tPortmonetka: при 200 остановках не превышает 18.00 zł
+        assertEquals(18.00, ZtmTariffConfig.calculatePekaCostPln(200, isUlgowy = false), 0.001)
+        // Льготный (Ulgowy 50%) потолок tPortmonetka: при 200 остановках не превышает 9.00 zł
+        assertEquals(9.00, ZtmTariffConfig.calculatePekaCostPln(200, isUlgowy = true), 0.001)
+
+        // 5 остановок: нормальный = 2.76 zł -> ulgowy = 1.38 zł; билет 15 мин: 4.00 zł -> 2.00 zł
+        val ulgowyShort = ZtmTicketCalculator.calculate(
+            pureTransitMinutes = 8,
+            delayMinutes = 0,
+            totalStopsPassed = 5,
+            zones = setOf("A"),
+            isUlgowy = true
+        )
+        assertTrue(ulgowyShort.isUlgowy)
+        assertEquals(1.38, ulgowyShort.pekaCostPln, 0.001)
+        assertEquals(2.00, ulgowyShort.recommendedTimeTicketPricePln, 0.001)
+        assertEquals(CheapestTicketChoice.PEKA_TPORTMONETKA, ulgowyShort.cheapestChoice)
+    }
 }

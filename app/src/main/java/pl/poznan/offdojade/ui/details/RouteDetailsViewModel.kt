@@ -14,6 +14,7 @@ import pl.poznan.offdojade.data.realtime.LiveVehicle
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
 import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.TransitJourney
+import pl.poznan.offdojade.domain.routing.ShapeSlicer
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import java.io.File
 
@@ -24,7 +25,12 @@ data class RouteShapePolyline(
 
 data class RouteDetailsUiState(
     val journey: TransitJourney? = null,
+    /** Активные участки маршрута транспорта (от посадки до высадки — полная непрозрачность) */
     val polylines: List<RouteShapePolyline> = emptyList(),
+    /** Полупрозрачная трасса транспорта вне нужного маршрута (максимум до 1 ближайшей остановки) */
+    val outsidePolylines: List<RouteShapePolyline> = emptyList(),
+    /** Пешие участки (до остановки, пересадки, до адреса) — отображаются пунктирной линией */
+    val walkPolylines: List<List<Pair<Double, Double>>> = emptyList(),
     val localMapFile: File? = null
 )
 
@@ -49,24 +55,66 @@ class RouteDetailsViewModel(
             val journey = transitGraphRepository.selectedJourney.value
             val mapFile = mapDownloader.getLocalMapFile().takeIf { it.exists() && it.length() > 0L }
 
-            val polylines = if (journey != null) {
-                journey.transitLegs.map { leg ->
-                    val shapePoints = transitGraphRepository.getShapePoints(leg.shapeId)
-                    val coords = if (shapePoints.size >= 2) {
-                        shapePoints.map { it.lat to it.lon }
-                    } else {
-                        leg.stops.map { it.latitude to it.longitude }
+            val activeLines = ArrayList<RouteShapePolyline>()
+            val outsideLines = ArrayList<RouteShapePolyline>()
+            val walkLines = ArrayList<List<Pair<Double, Double>>>()
+
+            if (journey != null) {
+                for (leg in journey.legs) {
+                    when (leg) {
+                        is JourneyLeg.WalkLeg -> {
+                            walkLines.add(
+                                listOf(
+                                    leg.fromLat to leg.fromLon,
+                                    leg.toLat to leg.toLon
+                                )
+                            )
+                        }
+
+                        is JourneyLeg.TransitLeg -> {
+                            val rawShape = transitGraphRepository.getShapePoints(leg.shapeId)
+                                .map { it.lat to it.lon }
+                            val legStopCoords = leg.stops.map { it.latitude to it.longitude }
+                            val (prevStop, nextStop) = transitGraphRepository.getAdjacentStopsForTrip(
+                                tripId = leg.tripId,
+                                boardingStopId = leg.boardingStop.stopId,
+                                alightingStopId = leg.alightingStop.stopId
+                            )
+                            val sliced = ShapeSlicer.slice(
+                                shapePoints = rawShape,
+                                legStops = legStopCoords,
+                                prevStop = prevStop,
+                                nextStop = nextStop
+                            )
+                            if (sliced.activeCoordinates.size >= 2) {
+                                activeLines.add(
+                                    RouteShapePolyline(
+                                        isTram = leg.isTram,
+                                        coordinates = sliced.activeCoordinates
+                                    )
+                                )
+                            }
+                            sliced.outsideSegments.forEach { seg ->
+                                if (seg.size >= 2) {
+                                    outsideLines.add(
+                                        RouteShapePolyline(
+                                            isTram = leg.isTram,
+                                            coordinates = seg
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
-                    RouteShapePolyline(isTram = leg.isTram, coordinates = coords)
                 }
-            } else {
-                emptyList()
             }
 
             _uiState.update {
                 it.copy(
                     journey = journey,
-                    polylines = polylines,
+                    polylines = activeLines,
+                    outsidePolylines = outsideLines,
+                    walkPolylines = walkLines,
                     localMapFile = mapFile
                 )
             }

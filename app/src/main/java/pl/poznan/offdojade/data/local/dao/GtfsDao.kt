@@ -145,4 +145,13 @@ interface GtfsDao {
 
     @Query("SELECT * FROM shapes WHERE shape_id = :shapeId ORDER BY sequence ASC")
     suspend fun getShapePoints(shapeId: String): List<ShapePointEntity>
+
+    @Query("SELECT * FROM trips WHERE route_id = :routeId AND service_id IN (:serviceIds)")
+    suspend fun getTripsForRouteAndServices(routeId: String, serviceIds: List<String>): List<TripEntity>
+
+    @Query("SELECT DISTINCT route_id FROM trips WHERE service_id IN (:serviceIds)")
+    suspend fun getActiveRouteIdsForServices(serviceIds: List<String>): List<String>
+
+    @Query("SELECT * FROM stop_times WHERE trip_id IN (:tripIds) ORDER BY trip_id ASC, stop_sequence ASC")
+    suspend fun getStopTimesForTrips(tripIds: List<String>): List<StopTimeEntity>
 }

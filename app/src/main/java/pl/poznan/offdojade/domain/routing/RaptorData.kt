@@ -34,6 +34,8 @@ class RaptorData(
     val tripIds: Array<String>,
     val tripShapeIds: Array<String>,
     val tripPatternIndex: IntArray,
+    /** GTFS wheelchair_accessible: 0 = unknown, 1 = low-floor, 2 = not accessible */
+    val tripWheelchairAccessible: IntArray = IntArray(tripCount),
     /** Длина = tripCount + 1; stop_times рейса t лежат в arrivalTimesSec/departureTimesSec[tripStopTimeOffsets[t] + pos] */
     val tripStopTimeOffsets: IntArray,
     val arrivalTimesSec: IntArray,

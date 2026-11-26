@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
+import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.LiveGreen
 import java.util.Locale
 
@@ -43,6 +44,7 @@ fun OnboardingScreen(
     viewModel: OnboardingViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val s = LocalStrings.current
 
     Scaffold { padding ->
         Column(
@@ -61,8 +63,7 @@ fun OnboardingScreen(
                 color = MaterialTheme.colorScheme.primary
             )
             Text(
-                text = "Офлайн-навигатор общественного транспорта Познани без рекламы и серверов. " +
-                    "Подготовим офлайн-карту и актуальное расписание ZTM.",
+                text = s.onboardingSubtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -88,26 +89,26 @@ fun OnboardingScreen(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Офлайн-карта Познани (.pmtiles)",
+                                text = s.offlineMapTitle,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             val statusText = when {
-                                state.mapDownloaded -> "Карта сохранена на устройстве"
-                                state.mapSkipped -> "Пропущено — карта будет работать в базовом режиме"
+                                state.mapDownloaded -> s.mapSaved
+                                state.mapSkipped -> s.mapSkipped
                                 state.mapDownloading && state.mapTotalMb > 0 -> String.format(
                                     Locale.US,
-                                    "Загрузка: %d%% (%.1f / %.1f МБ)",
+                                    "%d%% (%.1f / %.1f MB)",
                                     state.mapPercent,
                                     state.mapDownloadedMb,
                                     state.mapTotalMb
                                 )
                                 state.mapDownloading -> String.format(
                                     Locale.US,
-                                    "Загрузка: %.1f МБ…",
+                                    "%.1f MB…",
                                     state.mapDownloadedMb
                                 )
-                                else -> "Источник: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)"
+                                else -> s.mapSourceHint
                             }
                             Text(
                                 text = statusText,
@@ -148,13 +149,13 @@ fun OnboardingScreen(
                     ) {
                         if (!state.mapDownloaded) {
                             TextButton(onClick = viewModel::skipMapForNow) {
-                                Text("Пропустить пока")
+                                Text(s.skipForNow)
                             }
                             OutlinedButton(
                                 onClick = viewModel::startMapDownload,
                                 enabled = !state.mapDownloading
                             ) {
-                                Text(if (state.mapError != null) "Повторить" else "Скачать карту")
+                                Text(if (state.mapError != null) s.retry else s.downloadMap)
                             }
                         }
                     }
@@ -182,13 +183,13 @@ fun OnboardingScreen(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Расписание ZTM Poznań (GTFS)",
+                                text = s.gtfsScheduleTitle,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
                                 text = state.gtfsStage + if (state.gtfsRowsImported > 0) {
-                                    " • ${state.gtfsRowsImported} записей"
+                                    s.recordsSuffix(state.gtfsRowsImported)
                                 } else {
                                     ""
                                 },
@@ -220,7 +221,7 @@ fun OnboardingScreen(
                             onClick = viewModel::startGtfsSync,
                             enabled = !state.gtfsSyncing
                         ) {
-                            Text(if (state.gtfsReady) "Обновить расписание" else "Повторить загрузку")
+                            Text(if (state.gtfsReady) s.updateSchedule else s.retryDownload)
                         }
                     }
                 }
@@ -237,7 +238,7 @@ fun OnboardingScreen(
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Text(
-                    text = if (state.gtfsReady) "Начать поездки" else "Перейти на главный экран",
+                    text = if (state.gtfsReady) s.startTrips else s.goToHome,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )

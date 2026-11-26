@@ -17,14 +17,15 @@ import kotlin.math.round
  */
 object ZtmTicketCalculator {
 
-    fun calculateForLegs(legs: List<JourneyLeg>): TicketRecommendation {
+    fun calculateForLegs(legs: List<JourneyLeg>, isUlgowy: Boolean = false): TicketRecommendation {
         val transitLegs = legs.filterIsInstance<JourneyLeg.TransitLeg>()
         if (transitLegs.isEmpty()) {
             return calculate(
                 pureTransitMinutes = 0,
                 delayMinutes = 0,
                 totalStopsPassed = 0,
-                zones = setOf("A")
+                zones = setOf("A"),
+                isUlgowy = isUlgowy
             )
         }
 
@@ -55,7 +56,8 @@ object ZtmTicketCalculator {
             pureTransitMinutes = pureMinutes,
             delayMinutes = delayMinutes,
             totalStopsPassed = totalStopsPassed,
-            zones = zones.ifEmpty { setOf("A") }
+            zones = zones.ifEmpty { setOf("A") },
+            isUlgowy = isUlgowy
         )
     }
 
@@ -63,7 +65,8 @@ object ZtmTicketCalculator {
         pureTransitMinutes: Int,
         delayMinutes: Int,
         totalStopsPassed: Int,
-        zones: Set<String>
+        zones: Set<String>,
+        isUlgowy: Boolean = false
     ): TicketRecommendation {
         val safePure = pureTransitMinutes.coerceAtLeast(0)
         val safeDelay = delayMinutes.coerceAtLeast(0)
@@ -73,18 +76,19 @@ object ZtmTicketCalculator {
         val tickets = ZtmTariffConfig.TIME_TICKETS
         val pureTicket = tickets.firstOrNull { safePure <= it.maxMinutes } ?: tickets.last()
         val recommendedTicket = tickets.firstOrNull { totalEstimated <= it.maxMinutes } ?: tickets.last()
+        val recommendedPrice = recommendedTicket.priceFor(isUlgowy)
 
         val tightFitWarning = if (recommendedTicket.maxMinutes > pureTicket.maxMinutes) {
             val delayPart = if (safeDelay > 0) "опоздания +$safeDelay мин и " else ""
             "Чистое время $safePure мин, но с учетом ${delayPart}буфера +$buffer мин ($totalEstimated мин) " +
                 "билет на ${pureTicket.label} впритык — рекомендуем ${recommendedTicket.label} " +
-                "(${formatPln(recommendedTicket.pricePln)})"
+                "(${formatPln(recommendedPrice)})"
         } else {
             null
         }
 
-        val pekaCost = ZtmTariffConfig.calculatePekaCostPln(totalStopsPassed)
-        val diff = round((recommendedTicket.pricePln - pekaCost) * 100.0) / 100.0
+        val pekaCost = ZtmTariffConfig.calculatePekaCostPln(totalStopsPassed, isUlgowy = isUlgowy)
+        val diff = round((recommendedPrice - pekaCost) * 100.0) / 100.0
         val cheapest = when {
             totalStopsPassed <= 0 -> CheapestTicketChoice.TIME_TICKET
             diff > 0.005 -> CheapestTicketChoice.PEKA_TPORTMONETKA
@@ -109,7 +113,9 @@ object ZtmTicketCalculator {
             pekaCostPln = pekaCost,
             cheapestChoice = cheapest,
             savingsPln = round(abs(diff) * 100.0) / 100.0,
-            zones = sortedZones.ifEmpty { listOf("A") }
+            zones = sortedZones.ifEmpty { listOf("A") },
+            isUlgowy = isUlgowy,
+            recommendedTimeTicketPricePln = recommendedPrice
         )
     }
 

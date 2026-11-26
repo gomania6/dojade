@@ -30,8 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 
 ZTM_GTFS_URL = "https://www.ztm.poznan.pl/pl/dla-deweloperow/getGTFSFile"
-ROOM_DB_VERSION = 1
-ROOM_IDENTITY_HASH = "26172cec1c00d49b87e1ddbeb00c4118"
+ROOM_DB_VERSION = 2
+ROOM_IDENTITY_HASH = "ab98f15b12cd01a68b850d6296260438"
 
 FOOTPATH_MAX_METERS = 300.0
 WALKING_SPEED_MPS = 1.2
@@ -129,6 +129,7 @@ def init_room_schema(conn: sqlite3.Connection) -> None:
             `trip_headsign` TEXT NOT NULL,
             `direction_id` INTEGER NOT NULL,
             `shape_id` TEXT NOT NULL,
+            `wheelchair_accessible` INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(`trip_id`)
         );
 
@@ -358,8 +359,9 @@ def build_database(zip_path: Path, output_dir: Path) -> dict:
                 r.get("trip_headsign", ""),
                 int(r.get("direction_id") or 0),
                 r.get("shape_id", ""),
+                int(r.get("wheelchair_accessible") or 0),
             ))
-        cur.executemany("INSERT OR REPLACE INTO trips VALUES (?, ?, ?, ?, ?, ?)", trips)
+        cur.executemany("INSERT OR REPLACE INTO trips VALUES (?, ?, ?, ?, ?, ?, ?)", trips)
 
         batch = []
         for r in read_zip_csv(zf, "stop_times.txt"):

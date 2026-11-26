@@ -11,7 +11,10 @@ object ZtmTariffConfig {
         val label: String,
         val maxMinutes: Int,
         val pricePln: Double
-    )
+    ) {
+        fun priceFor(isUlgowy: Boolean): Double =
+            if (isUlgowy) kotlin.math.round(pricePln * 50.0) / 100.0 else pricePln
+    }
 
     /**
      * Временные билеты ZTM Poznań (Bilety czasowe — действуют во всех зонах A+B+C+D).
@@ -53,16 +56,24 @@ object ZtmTariffConfig {
         PekaStopTier(upToStopInclusive = Int.MAX_VALUE, pricePerStopPln = 0.12)
     )
 
+    /** Максимальный предел списания PEKA tPortmonetka: 18.00 zł (обычный) / 9.00 zł (ulgowy 50%) */
+    const val PEKA_MAX_CAP_NORMAL_PLN = 18.00
+    const val PEKA_MAX_CAP_ULGOWY_PLN = 9.00
+
     /**
-     * Вычисляет стоимость поездки по PEKA tPortmonetka для заданного количества остановок.
+     * Вычисляет стоимость поездки по PEKA tPortmonetka для заданного количества остановок
+     * с учётом льготы ulgowy (50%) и потолка 18.00 zł (9.00 zł для ulgowy).
      */
-    fun calculatePekaCostPln(totalStops: Int): Double {
+    fun calculatePekaCostPln(totalStops: Int, isUlgowy: Boolean = false): Double {
         if (totalStops <= 0) return 0.0
         var cost = 0.0
         for (stopIndex in 1..totalStops) {
             val tier = PEKA_STOP_TIERS.first { stopIndex <= it.upToStopInclusive }
             cost += tier.pricePerStopPln
         }
-        return kotlin.math.round(cost * 100.0) / 100.0
+        val adjusted = if (isUlgowy) cost * 0.5 else cost
+        val cap = if (isUlgowy) PEKA_MAX_CAP_ULGOWY_PLN else PEKA_MAX_CAP_NORMAL_PLN
+        val capped = adjusted.coerceAtMost(cap)
+        return kotlin.math.round(capped * 100.0) / 100.0
     }
 }

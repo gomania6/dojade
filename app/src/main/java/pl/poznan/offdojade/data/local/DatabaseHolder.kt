@@ -2,6 +2,8 @@ package pl.poznan.offdojade.data.local
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.dao.GtfsDao
 import java.io.File
@@ -31,6 +33,7 @@ class DatabaseHolder(private val context: Context) {
             GtfsDatabase::class.java,
             AppConfig.DATABASE_NAME
         )
+            .addMigrations(MIGRATION_1_2)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -58,6 +61,16 @@ class DatabaseHolder(private val context: Context) {
             }
 
             currentDb = buildDatabase()
+        }
+    }
+
+    companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `trips` ADD COLUMN `wheelchair_accessible` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
         }
     }
 }

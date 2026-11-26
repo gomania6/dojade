@@ -107,6 +107,7 @@ object TransitGraphBuilder {
         val tripIds = Array(totalTrips) { "" }
         val tripShapeIds = Array(totalTrips) { "" }
         val tripPatternIndex = IntArray(totalTrips)
+        val tripWheelchairAccessible = IntArray(totalTrips)
         val tripStopTimeOffsets = IntArray(totalTrips + 1)
         val arrivalTimesSec = IntArray(totalStopTimeEntries)
         val departureTimesSec = IntArray(totalStopTimeEntries)
@@ -128,6 +129,7 @@ object TransitGraphBuilder {
                 tripIds[tripCursor] = twt.trip.tripId
                 tripShapeIds[tripCursor] = twt.trip.shapeId
                 tripPatternIndex[tripCursor] = p
+                tripWheelchairAccessible[tripCursor] = twt.trip.wheelchairAccessible
                 tripStopTimeOffsets[tripCursor] = stCursor
                 for (st in twt.stopTimes) {
                     arrivalTimesSec[stCursor] = st.arrivalTimeSec
@@ -217,6 +219,7 @@ object TransitGraphBuilder {
             tripIds = tripIds,
             tripShapeIds = tripShapeIds,
             tripPatternIndex = tripPatternIndex,
+            tripWheelchairAccessible = tripWheelchairAccessible,
             tripStopTimeOffsets = tripStopTimeOffsets,
             arrivalTimesSec = arrivalTimesSec,
             departureTimesSec = departureTimesSec,

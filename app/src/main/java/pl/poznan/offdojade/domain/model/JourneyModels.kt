@@ -33,7 +33,9 @@ data class TicketRecommendation(
     val pekaCostPln: Double,
     val cheapestChoice: CheapestTicketChoice,
     val savingsPln: Double,
-    val zones: List<String>
+    val zones: List<String>,
+    val isUlgowy: Boolean = false,
+    val recommendedTimeTicketPricePln: Double = recommendedTimeTicket.priceFor(isUlgowy)
 ) {
     val zonesBadgeText: String
         get() = if (zones.isEmpty()) "Зона: A" else "Зоны: ${zones.joinToString(" + ")}"
@@ -79,14 +81,24 @@ sealed interface JourneyLeg {
         val delaySeconds: Int,
         val stops: List<LegStop>,
         override val startTimeSec: Int,
-        override val endTimeSec: Int
+        override val endTimeSec: Int,
+        /** GTFS wheelchair_accessible: 1 = low-floor */
+        val wheelchairAccessible: Int = 0
     ) : JourneyLeg {
         val isTram: Boolean get() = routeType == 0
+        val isLowFloor: Boolean get() = wheelchairAccessible == 1
         /** Количество проезжаемых остановок (интервалов между посадкой и высадкой) */
         val stopsPassed: Int get() = (stops.size - 1).coerceAtLeast(0)
         val boardingStop: LegStop get() = stops.first()
         val alightingStop: LegStop get() = stops.last()
     }
+}
+
+enum class JourneyAlternativeTag {
+    STANDARD,
+    DIRECT,
+    TRAM_ONLY,
+    BUS_ONLY
 }
 
 data class TransitJourney(
@@ -97,13 +109,20 @@ data class TransitJourney(
     val transferCount: Int,
     val ticketRecommendation: TicketRecommendation,
     val catchability: CatchabilityInfo?,
-    val searchDurationMs: Long = 0L
+    val searchDurationMs: Long = 0L,
+    val alternativeTag: JourneyAlternativeTag = JourneyAlternativeTag.STANDARD
 ) {
     val totalDurationMinutes: Int
         get() = ((arrivalTimeSec - departureTimeSec).coerceAtLeast(0) + 59) / 60
 
     val transitLegs: List<JourneyLeg.TransitLeg>
         get() = legs.filterIsInstance<JourneyLeg.TransitLeg>()
+
+    val isAllLowFloor: Boolean
+        get() = transitLegs.isNotEmpty() && transitLegs.all { it.isLowFloor }
+
+    val totalWalkMeters: Int
+        get() = legs.filterIsInstance<JourneyLeg.WalkLeg>().sumOf { it.distanceMeters }
 }
 
 data class UpcomingDeparture(

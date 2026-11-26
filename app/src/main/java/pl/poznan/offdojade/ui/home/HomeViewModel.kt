@@ -14,12 +14,19 @@ import kotlinx.coroutines.launch
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.local.QuickDestination
 import pl.poznan.offdojade.data.local.QuickDestinationSlot
+import pl.poznan.offdojade.data.local.RecentStopEntry
+import pl.poznan.offdojade.data.local.TripHistoryEntry
+import pl.poznan.offdojade.data.location.AddressSearchProvider
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.location.UserLocation
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
+import pl.poznan.offdojade.domain.model.AddressResult
 import pl.poznan.offdojade.domain.model.NearbyStopBoard
+import pl.poznan.offdojade.domain.model.RouteEndpoint
+import pl.poznan.offdojade.domain.model.RouteSearchRequest
 import pl.poznan.offdojade.domain.model.StopGroup
+import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import java.time.LocalTime
@@ -31,13 +38,14 @@ enum class ActiveStopField {
 
 data class HomeUiState(
     /** Выбранный Пункт А (`null` = текущее GPS-местоположение) */
-    val fromStop: StopGroup? = null,
+    val fromEndpoint: RouteEndpoint? = null,
     val fromQuery: String = "",
-    /** Выбранный Пункт Б */
-    val toStop: StopGroup? = null,
+    /** Выбранный Пункт Б (остановка или адрес) */
+    val toEndpoint: RouteEndpoint? = null,
     val toQuery: String = "",
     val activeField: ActiveStopField? = null,
     val searchResults: List<StopGroup> = emptyList(),
+    val addressResults: List<AddressResult> = emptyList(),
 
     val nearbyBoards: List<NearbyStopBoard> = emptyList(),
     val userLocation: UserLocation? = null,
@@ -54,7 +62,8 @@ class HomeViewModel(
     private val raptorEngine: RaptorEngine,
     private val realtimeRepository: RealtimeRepository,
     private val locationProvider: LocationProvider,
-    private val preferencesRepository: PreferencesRepository
+    private val preferencesRepository: PreferencesRepository,
+    private val addressSearchProvider: AddressSearchProvider
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -69,7 +78,14 @@ class HomeViewModel(
     val favoriteStopIds: StateFlow<Set<String>> = preferencesRepository.favoriteStopIds
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    val tripHistory: StateFlow<List<TripHistoryEntry>> = preferencesRepository.tripHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val recentStops: StateFlow<List<RecentStopEntry>> = preferencesRepository.recentStops
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     private var searchJob: Job? = null
+    private var addressSearchJob: Job? = null
     private var slotSearchJob: Job? = null
 
     init {
@@ -98,48 +114,131 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Вызывается при нажатии / фокусе на поле поиска «Откуда» или «Куда» —
+     * сразу открывает подсказки (избранные, ближайшие и подходящие остановки).
+     */
+    fun onFieldFocused(field: ActiveStopField) {
+        val currentQuery = when (field) {
+            ActiveStopField.FROM -> _uiState.value.fromQuery
+            ActiveStopField.TO -> _uiState.value.toQuery
+        }
+        _uiState.update { it.copy(activeField = field) }
+        triggerSearch(currentQuery, immediate = true)
+    }
+
+    fun dismissSuggestions() {
+        _uiState.update {
+            it.copy(
+                activeField = null,
+                searchResults = emptyList(),
+                addressResults = emptyList()
+            )
+        }
+    }
+
     fun onFromQueryChange(query: String) {
         _uiState.update {
             it.copy(
                 fromQuery = query,
-                fromStop = if (query.isBlank()) null else it.fromStop,
+                fromEndpoint = if (query.isBlank()) null else it.fromEndpoint,
                 activeField = ActiveStopField.FROM
             )
         }
-        triggerSearch(query)
+        triggerSearch(query, immediate = false)
     }
 
     fun onToQueryChange(query: String) {
         _uiState.update {
             it.copy(
                 toQuery = query,
-                toStop = if (query.isBlank()) null else it.toStop,
+                toEndpoint = if (query.isBlank()) null else it.toEndpoint,
                 activeField = ActiveStopField.TO
             )
         }
-        triggerSearch(query)
+        triggerSearch(query, immediate = false)
     }
 
-    private fun triggerSearch(query: String) {
+    private fun excludedOppositeStopName(field: ActiveStopField?): String? {
+        val opposite = when (field) {
+            ActiveStopField.FROM -> _uiState.value.toEndpoint
+            ActiveStopField.TO -> _uiState.value.fromEndpoint
+            null -> null
+        } ?: return null
+        return RaptorData.normalizeStopName(opposite.displayName)
+    }
+
+    private fun triggerSearch(query: String, immediate: Boolean) {
         searchJob?.cancel()
-        if (query.isBlank()) {
-            _uiState.update { it.copy(searchResults = emptyList()) }
-            return
-        }
+        addressSearchJob?.cancel()
+
+        val trimmed = query.trim()
+        val excludedName = excludedOppositeStopName(_uiState.value.activeField)
         searchJob = viewModelScope.launch {
-            delay(120L)
-            val matches = transitGraphRepository.searchStopGroups(query, limit = 20)
-            _uiState.update { it.copy(searchResults = matches) }
+            if (!immediate && trimmed.length >= 2) {
+                delay(40L)
+            }
+            val rawMatches = if (trimmed.length < 2) {
+                buildDefaultSuggestions()
+            } else {
+                transitGraphRepository.searchStopGroups(trimmed, limit = 20)
+            }
+            val filtered = if (excludedName != null) {
+                rawMatches.filterNot { RaptorData.normalizeStopName(it.displayName) == excludedName }
+            } else {
+                rawMatches
+            }
+            _uiState.update { it.copy(searchResults = filtered) }
         }
+
+        if (trimmed.length >= 3) {
+            addressSearchJob = viewModelScope.launch {
+                delay(250L)
+                val addresses = addressSearchProvider.searchAddresses(trimmed, limit = 5)
+                _uiState.update { it.copy(addressResults = addresses) }
+            }
+        } else {
+            _uiState.update { it.copy(addressResults = emptyList()) }
+        }
+    }
+
+    private suspend fun buildDefaultSuggestions(): List<StopGroup> {
+        val all = transitGraphRepository.searchStopGroups("", limit = 120)
+        if (all.isEmpty()) return emptyList()
+
+        val favIds = favoriteStopIds.value
+        val nearbyNames = _uiState.value.nearbyBoards.map { it.stopName.lowercase() }.toSet()
+
+        val favorites = all.filter { it.primaryStopId in favIds }
+        val nearby = all.filter { it.displayName.lowercase() in nearbyNames && it.primaryStopId !in favIds }
+        val rest = all.filter { it.primaryStopId !in favIds && it.displayName.lowercase() !in nearbyNames }
+
+        return (favorites + nearby + rest).distinctBy { it.primaryStopId }.take(12)
     }
 
     fun selectFromStop(group: StopGroup) {
+        val opposite = excludedOppositeStopName(ActiveStopField.FROM)
+        if (opposite != null && RaptorData.normalizeStopName(group.displayName) == opposite) return
+        recordRecentStop(group)
         _uiState.update {
             it.copy(
-                fromStop = group,
+                fromEndpoint = RouteEndpoint.Stop(group),
                 fromQuery = group.displayName,
                 activeField = null,
-                searchResults = emptyList()
+                searchResults = emptyList(),
+                addressResults = emptyList()
+            )
+        }
+    }
+
+    fun selectFromAddress(address: AddressResult) {
+        _uiState.update {
+            it.copy(
+                fromEndpoint = RouteEndpoint.Address(address),
+                fromQuery = address.displayName,
+                activeField = null,
+                searchResults = emptyList(),
+                addressResults = emptyList()
             )
         }
     }
@@ -147,21 +246,39 @@ class HomeViewModel(
     fun resetFromToGps() {
         _uiState.update {
             it.copy(
-                fromStop = null,
+                fromEndpoint = null,
                 fromQuery = "",
                 activeField = null,
-                searchResults = emptyList()
+                searchResults = emptyList(),
+                addressResults = emptyList()
             )
         }
     }
 
-    fun selectToStop(group: StopGroup) {
+    fun selectToStop(group: StopGroup): Boolean {
+        val opposite = excludedOppositeStopName(ActiveStopField.TO)
+        if (opposite != null && RaptorData.normalizeStopName(group.displayName) == opposite) return false
+        recordRecentStop(group)
         _uiState.update {
             it.copy(
-                toStop = group,
+                toEndpoint = RouteEndpoint.Stop(group),
                 toQuery = group.displayName,
                 activeField = null,
-                searchResults = emptyList()
+                searchResults = emptyList(),
+                addressResults = emptyList()
+            )
+        }
+        return true
+    }
+
+    fun selectToAddress(address: AddressResult) {
+        _uiState.update {
+            it.copy(
+                toEndpoint = RouteEndpoint.Address(address),
+                toQuery = address.displayName,
+                activeField = null,
+                searchResults = emptyList(),
+                addressResults = emptyList()
             )
         }
     }
@@ -169,27 +286,157 @@ class HomeViewModel(
     fun clearToStop() {
         _uiState.update {
             it.copy(
-                toStop = null,
+                toEndpoint = null,
                 toQuery = "",
                 activeField = null,
-                searchResults = emptyList()
+                searchResults = emptyList(),
+                addressResults = emptyList()
             )
         }
     }
 
     fun swapFromAndTo() {
         _uiState.update { state ->
-            val oldFrom = state.fromStop
-            val oldTo = state.toStop
+            val oldFrom = state.fromEndpoint
+            val oldTo = state.toEndpoint
             state.copy(
-                fromStop = oldTo,
+                fromEndpoint = oldTo,
                 fromQuery = oldTo?.displayName.orEmpty(),
-                toStop = oldFrom,
+                toEndpoint = oldFrom,
                 toQuery = oldFrom?.displayName.orEmpty(),
                 activeField = null,
-                searchResults = emptyList()
+                searchResults = emptyList(),
+                addressResults = emptyList()
             )
         }
+    }
+
+    fun prepareRouteSearch(to: RouteEndpoint) {
+        val from = _uiState.value.fromEndpoint
+        transitGraphRepository.setActiveSearchRequest(
+            RouteSearchRequest(
+                from = from,
+                to = to
+            )
+        )
+        recordTripHistory(from, to)
+    }
+
+    fun prepareRouteFromHistory(entry: TripHistoryEntry) {
+        val from: RouteEndpoint? = when {
+            !entry.fromStopId.isNullOrBlank() && !entry.fromName.isNullOrBlank() ->
+                RouteEndpoint.Stop(
+                    StopGroup(
+                        displayName = entry.fromName,
+                        primaryStopId = entry.fromStopId,
+                        stopIds = listOf(entry.fromStopId),
+                        zones = listOf("A"),
+                        platformCount = 1,
+                        latitude = entry.fromLat ?: 0.0,
+                        longitude = entry.fromLon ?: 0.0
+                    )
+                )
+            !entry.fromName.isNullOrBlank() && entry.fromLat != null && entry.fromLon != null ->
+                RouteEndpoint.Address(
+                    AddressResult(
+                        id = "hist_from_${entry.id}",
+                        displayName = entry.fromName,
+                        subtitle = "Poznań",
+                        latitude = entry.fromLat,
+                        longitude = entry.fromLon
+                    )
+                )
+            else -> null
+        }
+
+        val to: RouteEndpoint = if (!entry.toStopId.isNullOrBlank()) {
+            RouteEndpoint.Stop(
+                StopGroup(
+                    displayName = entry.toName,
+                    primaryStopId = entry.toStopId,
+                    stopIds = listOf(entry.toStopId),
+                    zones = listOf("A"),
+                    platformCount = 1,
+                    latitude = entry.toLat,
+                    longitude = entry.toLon
+                )
+            )
+        } else {
+            RouteEndpoint.Address(
+                AddressResult(
+                    id = "hist_to_${entry.id}",
+                    displayName = entry.toName,
+                    subtitle = "Poznań",
+                    latitude = entry.toLat,
+                    longitude = entry.toLon
+                )
+            )
+        }
+
+        transitGraphRepository.setActiveSearchRequest(RouteSearchRequest(from = from, to = to))
+        recordTripHistory(from, to)
+    }
+
+    fun removeTripHistory(id: String) {
+        viewModelScope.launch { preferencesRepository.removeTripHistory(id) }
+    }
+
+    fun clearTripHistory() {
+        viewModelScope.launch { preferencesRepository.clearTripHistory() }
+    }
+
+    fun clearRecentStops() {
+        viewModelScope.launch { preferencesRepository.clearRecentStops() }
+    }
+
+    private fun recordRecentStop(group: StopGroup) {
+        viewModelScope.launch {
+            preferencesRepository.addRecentStop(
+                RecentStopEntry(
+                    stopId = group.primaryStopId,
+                    displayName = group.displayName,
+                    zones = group.zones,
+                    platformCount = group.platformCount,
+                    latitude = group.latitude,
+                    longitude = group.longitude
+                )
+            )
+        }
+    }
+
+    private fun recordTripHistory(from: RouteEndpoint?, to: RouteEndpoint) {
+        val fromStopId = (from as? RouteEndpoint.Stop)?.group?.primaryStopId
+        val toStopId = (to as? RouteEndpoint.Stop)?.group?.primaryStopId
+        val key = "${fromStopId ?: from?.displayName ?: "GPS"}->${toStopId ?: to.displayName}"
+        viewModelScope.launch {
+            preferencesRepository.addTripHistory(
+                TripHistoryEntry(
+                    id = key,
+                    fromStopId = fromStopId,
+                    fromName = from?.displayName,
+                    fromLat = from?.latitude,
+                    fromLon = from?.longitude,
+                    toStopId = toStopId,
+                    toName = to.displayName,
+                    toLat = to.latitude,
+                    toLon = to.longitude,
+                    timestampMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun prepareRouteSearchToStopId(stopId: String, stopName: String) {
+        val group = StopGroup(
+            displayName = stopName,
+            primaryStopId = stopId,
+            stopIds = listOf(stopId),
+            zones = listOf("A"),
+            platformCount = 1,
+            latitude = 0.0,
+            longitude = 0.0
+        )
+        prepareRouteSearch(RouteEndpoint.Stop(group))
     }
 
     fun toggleFavoriteStop(stopId: String) {
@@ -214,7 +461,7 @@ class HomeViewModel(
         _uiState.update { it.copy(slotSearchQuery = query) }
         slotSearchJob?.cancel()
         slotSearchJob = viewModelScope.launch {
-            delay(100L)
+            delay(80L)
             val results = transitGraphRepository.searchStopGroups(query, limit = 20)
             _uiState.update { it.copy(slotSearchResults = results) }
         }
@@ -227,13 +474,15 @@ class HomeViewModel(
         }
     }
 
-    suspend fun resolveQuickDestinationStopId(dest: QuickDestination): String? {
-        if (!dest.stopId.isNullOrBlank()) return dest.stopId
+    suspend fun resolveQuickDestinationStop(dest: QuickDestination): Pair<String, String>? {
+        if (!dest.stopId.isNullOrBlank()) {
+            return dest.stopId to (dest.stopName ?: dest.stopId)
+        }
         if (!dest.stopName.isNullOrBlank()) {
             val match = transitGraphRepository.searchStopGroups(dest.stopName, limit = 1).firstOrNull()
             if (match != null) {
                 preferencesRepository.setQuickDestination(dest.slot, match.primaryStopId, match.displayName)
-                return match.primaryStopId
+                return match.primaryStopId to match.displayName
             }
         }
         return null
