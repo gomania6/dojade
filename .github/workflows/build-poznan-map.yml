@@ -24,6 +24,7 @@ jobs:
           LATEST_KEY=$(curl -s https://build-metadata.protomaps.dev/builds.json | jq -r '.[-1].key')
           SOURCE_URL="https://build.protomaps.com/${LATEST_KEY}"
           echo "Extracting Poznań from: $SOURCE_URL"
+          # Координаты Познани и агломерации (Коморники, Любонь, Сважендз, Сухы Ляс, Тарново-Подгурне)
           ./pmtiles extract "$SOURCE_URL" poznan.pmtiles --bbox=16.65,52.28,17.15,52.53 --maxzoom=15
           ls -lh poznan.pmtiles
 
@@ -32,10 +33,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="map-v1"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" poznan.pmtiles --clobber
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" poznan.pmtiles --clobber -R "$REPO"
           else
-            gh release create "$TAG" poznan.pmtiles \
+            gh release create "$TAG" poznan.pmtiles -R "$REPO" \
               --title "Poznań Offline Vector Map (PMTiles)" \
               --notes "Офлайн-векторная карта Познани и агломерации для OffDojade."
           fi
