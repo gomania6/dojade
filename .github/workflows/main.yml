@@ -1,0 +1,38 @@
+name: Update ZTM Poznań Schedule DB
+
+on:
+  schedule:
+    # Каждый день в 03:00 по времени Познани (02:00 UTC)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish-schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download ZTM GTFS and build compact SQLite DB
+        run: python scripts/build_gtfs_db.py --output-dir dist
+
+      - name: Publish poznan_schedule.db.gz and version.json to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="schedule-latest"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/poznan_schedule.db.gz dist/version.json --clobber
+          else
+            gh release create "$TAG" dist/poznan_schedule.db.gz dist/version.json \
+              --title "ZTM Poznań Prebuilt Schedule (Auto-updated)" \
+              --notes "Ежедневно обновляемая SQLite-база расписания ZTM Poznań для OffDojade."
+          fi
