@@ -118,6 +118,10 @@ data class TransitJourney(
     val transitLegs: List<JourneyLeg.TransitLeg>
         get() = legs.filterIsInstance<JourneyLeg.TransitLeg>()
 
+    /** Время отправления первого автобуса/трамвая (без учёта пешего подхода до остановки) */
+    val transitDepartureTimeSec: Int
+        get() = transitLegs.firstOrNull()?.startTimeSec ?: departureTimeSec
+
     val isAllLowFloor: Boolean
         get() = transitLegs.isNotEmpty() && transitLegs.all { it.isLowFloor }
 

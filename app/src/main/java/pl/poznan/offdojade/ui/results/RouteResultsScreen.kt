@@ -1,5 +1,11 @@
 package pl.poznan.offdojade.ui.results
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,6 +50,12 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import java.time.LocalTime
+import java.time.ZoneId
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -57,12 +69,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
 import pl.poznan.offdojade.domain.model.CheapestTicketChoice
 import pl.poznan.offdojade.domain.model.TransitJourney
+import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.tariff.ZtmTicketCalculator
+import pl.poznan.offdojade.ui.components.AnimatedLiveSignal
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
 import pl.poznan.offdojade.ui.theme.LiveGreen
+import pl.poznan.offdojade.ui.theme.NightBusOnWhite
+import pl.poznan.offdojade.ui.theme.NightBusWhite
 import pl.poznan.offdojade.ui.theme.OfflineGray
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,8 +92,16 @@ fun RouteResultsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val s = LocalStrings.current
 
+    // Автоматическое обновление текущего времени каждые 15 секунд во время просмотра маршрутов
+    var liveNowSec by remember {
+        mutableIntStateOf(LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay())
+    }
     LaunchedEffect(Unit) {
         viewModel.searchActiveRequest()
+        while (true) {
+            delay(15_000L)
+            liveNowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+        }
     }
 
     Scaffold(
@@ -189,126 +213,142 @@ fun RouteResultsScreen(
             }
         }
     ) { padding ->
-        when {
-            state.isLoading -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
-            }
-
-            state.error != null -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+        val contentState = when {
+            state.isLoading -> 0
+            state.error != null -> 1
+            else -> 2
+        }
+        AnimatedContent(
+            targetState = contentState,
+            transitionSpec = {
+                fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                    fadeOut(tween(160, easing = FastOutSlowInEasing))
+            },
+            label = "resultsStateTransition",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) { target ->
+            when (target) {
+                0 -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = when (state.error) {
-                                RouteSearchError.SCHEDULE_NOT_LOADED -> s.scheduleNotLoadedError
-                                RouteSearchError.NO_ROUTES_FOUND -> s.noRoutesFound
-                                null -> ""
-                            },
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (state.hasActiveFilters) {
-                            OutlinedButton(onClick = onOpenSettings) {
-                                Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(s.tripFiltersTooltip)
+                        CircularProgressIndicator()
+                    }
+                }
+
+                1 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = when (state.error) {
+                                    RouteSearchError.SCHEDULE_NOT_LOADED -> s.scheduleNotLoadedError
+                                    RouteSearchError.NO_ROUTES_FOUND -> s.noRoutesFound
+                                    null -> ""
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (state.hasActiveFilters) {
+                                OutlinedButton(onClick = onOpenSettings) {
+                                    Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(s.tripFiltersTooltip)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            else -> {
-                PullToRefreshBox(
-                    isRefreshing = state.isLoadingEarlier,
-                    onRefresh = viewModel::loadEarlierJourneys,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                ) {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                else -> {
+                    PullToRefreshBox(
+                        isRefreshing = state.isLoadingEarlier,
+                        onRefresh = viewModel::loadEarlierJourneys,
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        item(key = "load_earlier_header") {
-                            if (state.noMoreEarlier) {
-                                Text(
-                                    text = s.noEarlierRoutes,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                )
-                            } else {
-                                OutlinedButton(
-                                    onClick = viewModel::loadEarlierJourneys,
-                                    enabled = !state.isLoadingEarlier,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(38.dp),
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                                ) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            item(key = "load_earlier_header") {
+                                if (state.noMoreEarlier) {
                                     Text(
-                                        text = if (state.isLoadingEarlier) s.loadingEarlier else s.loadEarlierDeparted,
-                                        style = MaterialTheme.typography.labelMedium
+                                        text = s.noEarlierRoutes,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
                                     )
+                                } else {
+                                    OutlinedButton(
+                                        onClick = viewModel::loadEarlierJourneys,
+                                        enabled = !state.isLoadingEarlier,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(38.dp),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            text = if (state.isLoadingEarlier) s.loadingEarlier else s.loadEarlierDeparted,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    }
                                 }
                             }
-                        }
 
-                        items(state.journeys, key = { it.id }) { journey ->
-                            MinimalJourneyCard(
-                                journey = journey,
-                                referenceNowSec = state.referenceNowSec,
-                                onClick = {
-                                    viewModel.selectJourney(journey)
-                                    onOpenDetails()
-                                }
-                            )
-                        }
-
-                        item(key = "load_later_footer") {
-                            if (state.noMoreLater) {
-                                Text(
-                                    text = s.noLaterRoutes,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                )
-                            } else {
-                                OutlinedButton(
-                                    onClick = viewModel::loadLaterJourneys,
-                                    enabled = !state.isLoadingLater,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(38.dp),
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                                ) {
-                                    Text(
-                                        text = if (state.isLoadingLater) s.loadingLater else s.loadLaterRoutes,
-                                        style = MaterialTheme.typography.labelMedium
+                            items(state.journeys, key = { it.id }) { journey ->
+                                MinimalJourneyCard(
+                                    journey = journey,
+                                    referenceNowSec = liveNowSec,
+                                    onClick = {
+                                        viewModel.selectJourney(journey)
+                                        onOpenDetails()
+                                    },
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = tween(220),
+                                        placementSpec = tween(240, easing = FastOutSlowInEasing)
                                     )
+                                )
+                            }
+
+                            item(key = "load_later_footer") {
+                                if (state.noMoreLater) {
+                                    Text(
+                                        text = s.noLaterRoutes,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
+                                    )
+                                } else {
+                                    OutlinedButton(
+                                        onClick = viewModel::loadLaterJourneys,
+                                        enabled = !state.isLoadingLater,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(38.dp),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            text = if (state.isLoadingLater) s.loadingLater else s.loadLaterRoutes,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -324,13 +364,16 @@ fun RouteResultsScreen(
 private fun MinimalJourneyCard(
     journey: TransitJourney,
     referenceNowSec: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
-    val isDeparted = journey.departureTimeSec < referenceNowSec
-    val deltaSec = journey.departureTimeSec - referenceNowSec
+    val busDepSec = journey.transitDepartureTimeSec
+    val isDeparted = busDepSec < referenceNowSec
+    val deltaSec = busDepSec - referenceNowSec
     val deltaMins = if (isDeparted) ((-deltaSec) + 30) / 60 else deltaSec / 60
     val isOverHour = deltaMins > 60
+    val isDelayed = journey.transitLegs.any { it.delaySeconds >= 60 }
     val hasRealtime = journey.transitLegs.any { it.delaySeconds != 0 }
 
     val ticket = journey.ticketRecommendation
@@ -341,7 +384,7 @@ private fun MinimalJourneyCard(
     }
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .alpha(if (isDeparted) 0.58f else 1f)
             .clickable(onClick = onClick),
@@ -374,7 +417,7 @@ private fun MinimalJourneyCard(
                 ) {
                     if (isOverHour) {
                         Text(
-                            text = TimeFormatUtils.formatClock(journey.departureTimeSec),
+                            text = TimeFormatUtils.formatClock(busDepSec),
                             fontSize = 25.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface
@@ -411,13 +454,9 @@ private fun MinimalJourneyCard(
                         )
                     }
                     if (!isDeparted && hasRealtime) {
-                        Icon(
-                            imageVector = Icons.Default.Sensors,
-                            contentDescription = null,
-                            tint = LiveGreen,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .padding(bottom = 3.dp)
+                        AnimatedLiveSignal(
+                            isDelayed = isDelayed,
+                            modifier = Modifier.padding(bottom = 2.dp)
                         )
                     }
                 }
@@ -445,7 +484,7 @@ private fun MinimalJourneyCard(
                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     TimePill(
-                        text = TimeFormatUtils.formatClock(journey.departureTimeSec),
+                        text = TimeFormatUtils.formatClock(busDepSec),
                         bgColor = DeparturePillGreen
                     )
                     Text(
@@ -486,6 +525,7 @@ private fun MinimalLineChip(
     shortName: String,
     isTram: Boolean
 ) {
+    val isNightBus = !isTram && TransportMode.isNightLine(shortName)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -493,19 +533,22 @@ private fun MinimalLineChip(
         Icon(
             imageVector = if (isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
+            tint = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(19.dp)
         )
         Surface(
             shape = RoundedCornerShape(7.dp),
-            color = Color.Transparent,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            color = if (isNightBus) NightBusWhite else Color.Transparent,
+            border = BorderStroke(
+                width = 1.dp,
+                color = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.outline
+            )
         ) {
             Text(
                 text = shortName,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (isNightBus) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
             )
         }

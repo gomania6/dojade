@@ -33,11 +33,30 @@ sealed interface RouteEndpoint {
     }
 }
 
+enum class TimeQueryMode {
+    DEPART_AT,
+    ARRIVE_BY
+}
+
+/**
+ * Запланированное время поездки:
+ * - [timeSec] == null -> «Сейчас» (текущее время)
+ * - [mode] == DEPART_AT -> выезд в [timeSec]
+ * - [mode] == ARRIVE_BY -> прибытие не позже [timeSec]
+ */
+data class PlannedTime(
+    val mode: TimeQueryMode = TimeQueryMode.DEPART_AT,
+    val timeSec: Int? = null
+) {
+    val isNow: Boolean get() = timeSec == null
+}
+
 /**
  * Параметры запроса маршрута, передаваемые между HomeScreen и RouteResultsScreen.
  */
 data class RouteSearchRequest(
     /** `null` = старт от текущего GPS-местоположения */
     val from: RouteEndpoint? = null,
-    val to: RouteEndpoint
+    val to: RouteEndpoint,
+    val plannedTime: PlannedTime = PlannedTime()
 )

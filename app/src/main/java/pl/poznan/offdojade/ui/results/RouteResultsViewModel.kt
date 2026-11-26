@@ -17,11 +17,13 @@ import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
 import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.RouteSearchRequest
+import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TripSettings
 import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import java.time.LocalTime
+import java.time.ZoneId
 
 enum class RouteSearchError {
     SCHEDULE_NOT_LOADED,
@@ -36,7 +38,7 @@ data class RouteResultsUiState(
     val isLoadingLater: Boolean = false,
     val noMoreEarlier: Boolean = false,
     val noMoreLater: Boolean = false,
-    val referenceNowSec: Int = LocalTime.now().toSecondOfDay(),
+    val referenceNowSec: Int = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay(),
     val journeys: List<TransitJourney> = emptyList(),
     val searchDurationMs: Long = 0L,
     val error: RouteSearchError? = null,
@@ -80,7 +82,7 @@ class RouteResultsViewModel(
         activeRequest = request
 
         viewModelScope.launch {
-            val nowSec = LocalTime.now().toSecondOfDay()
+            val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
             val settings = preferencesRepository.getAppSettings().tripSettings
             currentTripSettings = settings
 
@@ -132,22 +134,43 @@ class RouteResultsViewModel(
             val targetStopId = (request.to as? RouteEndpoint.Stop)?.group?.primaryStopId
             val targetAddr = request.to as? RouteEndpoint.Address
 
+            val planned = request.plannedTime
+            val queryTimeSec = planned.timeSec ?: nowSec
+
             val results = withContext(Dispatchers.Default) {
-                raptorEngine.searchUpcomingJourneys(
-                    data = graph,
-                    originStopId = originStopId,
-                    originLat = cachedOriginLat,
-                    originLon = cachedOriginLon,
-                    targetStopId = targetStopId,
-                    departureTimeSec = nowSec,
-                    tripDelays = realtimeRepository.tripDelaysSec,
-                    tripSettings = settings,
-                    limit = 5,
-                    originName = originName,
-                    targetLat = targetAddr?.latitude,
-                    targetLon = targetAddr?.longitude,
-                    targetName = targetAddr?.displayName
-                )
+                if (planned.mode == TimeQueryMode.ARRIVE_BY && planned.timeSec != null) {
+                    raptorEngine.searchArrivingByJourneys(
+                        data = graph,
+                        originStopId = originStopId,
+                        originLat = cachedOriginLat,
+                        originLon = cachedOriginLon,
+                        targetStopId = targetStopId,
+                        arriveByTimeSec = planned.timeSec,
+                        tripDelays = realtimeRepository.tripDelaysSec,
+                        tripSettings = settings,
+                        limit = 5,
+                        originName = originName,
+                        targetLat = targetAddr?.latitude,
+                        targetLon = targetAddr?.longitude,
+                        targetName = targetAddr?.displayName
+                    )
+                } else {
+                    raptorEngine.searchUpcomingJourneys(
+                        data = graph,
+                        originStopId = originStopId,
+                        originLat = cachedOriginLat,
+                        originLon = cachedOriginLon,
+                        targetStopId = targetStopId,
+                        departureTimeSec = queryTimeSec,
+                        tripDelays = realtimeRepository.tripDelaysSec,
+                        tripSettings = settings,
+                        limit = 5,
+                        originName = originName,
+                        targetLat = targetAddr?.latitude,
+                        targetLon = targetAddr?.longitude,
+                        targetName = targetAddr?.displayName
+                    )
+                }
             }
 
             _uiState.update {

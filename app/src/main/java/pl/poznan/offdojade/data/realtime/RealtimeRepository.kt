@@ -75,13 +75,17 @@ class RealtimeRepository(
                 val tu = entity.trip_update ?: continue
                 val tripId = tu.trip.trip_id ?: continue
 
-                // Приоритет: общая задержка рейса -> последняя доступная задержка в stop_time_update
-                val delaySec = tu.delay
-                    ?: tu.stop_time_update.firstNotNullOfOrNull { stu ->
-                        stu.departure?.delay ?: stu.arrival?.delay
-                    }
-                    ?: 0
-                updatedDelays[tripId] = delaySec
+                // Приоритет: ненулевая общая задержка -> последняя актуальная задержка в stop_time_update -> 0
+                // Отрицательные значения (автобус ждёт на конечной до старта рейса) обнуляем, чтобы не показывать ложное «опережение»
+                val stuDelay = tu.stop_time_update
+                    .lastOrNull { (it.departure?.delay ?: it.arrival?.delay) != null }
+                    ?.let { it.departure?.delay ?: it.arrival?.delay }
+                val rawDelay = when {
+                    tu.delay != null && tu.delay != 0 -> tu.delay
+                    stuDelay != null -> stuDelay
+                    else -> tu.delay ?: 0
+                }
+                updatedDelays[tripId] = rawDelay.coerceAtLeast(0)
             }
 
             tripDelaysSec.clear()
@@ -128,4 +132,6 @@ class RealtimeRepository(
     }
 
     fun getDelaySeconds(tripId: String): Int = tripDelaysSec[tripId] ?: 0
+
+    fun isTripTracked(tripId: String): Boolean = tripDelaysSec.containsKey(tripId)
 }

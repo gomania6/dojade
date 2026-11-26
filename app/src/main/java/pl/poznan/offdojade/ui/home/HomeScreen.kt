@@ -1,6 +1,19 @@
 package pl.poznan.offdojade.ui.home
 
+import android.Manifest
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -9,6 +22,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,18 +41,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapVert
@@ -44,28 +59,28 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,324 +91,402 @@ import org.koin.androidx.compose.koinViewModel
 import pl.poznan.offdojade.data.local.QuickDestination
 import pl.poznan.offdojade.data.local.QuickDestinationSlot
 import pl.poznan.offdojade.data.local.RecentStopEntry
-import pl.poznan.offdojade.data.local.TripHistoryEntry
 import pl.poznan.offdojade.domain.model.AddressResult
 import pl.poznan.offdojade.domain.model.NearbyStopBoard
+import pl.poznan.offdojade.domain.model.PlannedTime
 import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.StopGroup
+import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.ui.components.LineBadge
-import pl.poznan.offdojade.ui.components.RealtimeStatusBadge
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
 import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
 import java.time.LocalTime
+import java.time.ZoneId
+import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onOpenRouteResults: () -> Unit,
     onOpenSyncSettings: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenTimetables: () -> Unit,
     viewModel: HomeViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val realtimeStatus by viewModel.realtimeStatus.collectAsStateWithLifecycle()
     val quickDestinations by viewModel.quickDestinations.collectAsStateWithLifecycle()
     val favoriteIds by viewModel.favoriteStopIds.collectAsStateWithLifecycle()
     val tripHistory by viewModel.tripHistory.collectAsStateWithLifecycle()
     val recentStops by viewModel.recentStops.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val s = LocalStrings.current
+
+    var pendingQuickDest by remember { mutableStateOf<QuickDestination?>(null) }
+
+    fun launchQuickRouteWithGps(dest: QuickDestination) {
+        scope.launch {
+            val resolved = viewModel.resolveQuickDestinationStop(dest)
+            if (resolved != null) {
+                viewModel.prepareQuickRouteFromGps(resolved.first, resolved.second)
+                onOpenRouteResults()
+            } else {
+                viewModel.openQuickDestinationEditor(dest.slot)
+            }
+        }
+    }
+
+    val quickLocationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val pending = pendingQuickDest
+        pendingQuickDest = null
+        if (pending != null) {
+            if (!viewModel.isLocationEnabled()) {
+                runCatching {
+                    context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                }
+            }
+            launchQuickRouteWithGps(pending)
+        }
+    }
+
     val isSearchMode = state.activeField != null
     val activeQuery = when (state.activeField) {
         ActiveStopField.FROM -> state.fromQuery
         ActiveStopField.TO -> state.toQuery
         null -> ""
     }
+    var showTimePickerDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = isSearchMode) {
         focusManager.clearFocus()
         viewModel.dismissSuggestions()
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (isSearchMode) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // Верхний единый блок поиска в стиле Jakdojade (без лишнего TopAppBar)
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .animateContentSize(animationSpec = tween(220, easing = FastOutSlowInEasing))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                AnimatedVisibility(
+                    visible = isSearchMode,
+                    enter = expandVertically(tween(200, easing = FastOutSlowInEasing)) + fadeIn(tween(180)),
+                    exit = shrinkVertically(tween(180, easing = FastOutSlowInEasing)) + fadeOut(tween(140))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         IconButton(
                             onClick = {
                                 focusManager.clearFocus()
                                 viewModel.dismissSuggestions()
-                            }
+                            },
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
                         }
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
                         Text(
-                            text = s.appName,
-                            fontWeight = FontWeight.Bold
+                            text = if (state.activeField == ActiveStopField.FROM) s.pointALabel else s.pointBLabel,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
-                        if (!isSearchMode) {
-                            RealtimeStatusBadge(status = realtimeStatus)
-                        }
                     }
-                },
-                actions = {
-                    if (!isSearchMode) {
-                        IconButton(onClick = onOpenTimetables) {
-                            Icon(Icons.Default.Schedule, contentDescription = s.timetables)
+                }
+
+                // Поле 1: Откуда (зелёная точка)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(11.dp)
+                                .clip(CircleShape)
+                                .background(DeparturePillGreen)
+                        )
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (state.fromQuery.isEmpty()) {
+                                Text(
+                                    text = s.myLocationGps,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicTextField(
+                                value = state.fromQuery,
+                                onValueChange = viewModel::onFromQueryChange,
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onFocusChanged { focusState ->
+                                        if (focusState.isFocused) {
+                                            viewModel.onFieldFocused(ActiveStopField.FROM)
+                                        }
+                                    }
+                            )
                         }
-                        IconButton(onClick = viewModel::refreshDashboard) {
-                            Icon(Icons.Default.Refresh, contentDescription = s.refresh)
-                        }
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = s.settings)
+                        if (state.fromQuery.isNotEmpty() || state.fromEndpoint != null) {
+                            IconButton(
+                                onClick = viewModel::resetFromToGps,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = s.resetToGpsTooltip,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // 1. Минималистичный блок поиска в стиле Jakdojade (зелёная точка -> синяя точка)
-            item {
+
+                // Поле 2: Куда (синяя точка) + кнопка Swap
                 Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(start = 14.dp, end = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(11.dp)
+                                .clip(CircleShape)
+                                .background(ArrivalPillBlue)
+                        )
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            // Вертикальный коннектор: зелёная точка (Откуда) -> синяя точка (Куда)
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(11.dp)
-                                        .clip(CircleShape)
-                                        .background(DeparturePillGreen)
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .width(2.5.dp)
-                                        .height(26.dp)
-                                        .background(MaterialTheme.colorScheme.outline)
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(11.dp)
-                                        .clip(CircleShape)
-                                        .background(ArrivalPillBlue)
+                            if (state.toQuery.isEmpty()) {
+                                Text(
+                                    text = s.chooseStopPlaceholder,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
-
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                // Пункт А (Откуда)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier.weight(1f),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        if (state.fromQuery.isEmpty()) {
-                                            Text(
-                                                text = s.myLocationGps,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        BasicTextField(
-                                            value = state.fromQuery,
-                                            onValueChange = viewModel::onFromQueryChange,
-                                            singleLine = true,
-                                            textStyle = MaterialTheme.typography.titleMedium.copy(
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                fontWeight = FontWeight.Medium
-                                            ),
-                                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .onFocusChanged { focusState ->
-                                                    if (focusState.isFocused) {
-                                                        viewModel.onFieldFocused(ActiveStopField.FROM)
-                                                    }
-                                                }
-                                        )
-                                    }
-                                    if (state.fromQuery.isNotEmpty() || state.fromEndpoint != null) {
-                                        IconButton(
-                                            onClick = viewModel::resetFromToGps,
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = s.resetToGpsTooltip,
-                                                modifier = Modifier.size(18.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                                // Пункт Б (Куда)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier.weight(1f),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        if (state.toQuery.isEmpty()) {
-                                            Text(
-                                                text = s.chooseStopPlaceholder,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        BasicTextField(
-                                            value = state.toQuery,
-                                            onValueChange = viewModel::onToQueryChange,
-                                            singleLine = true,
-                                            textStyle = MaterialTheme.typography.titleMedium.copy(
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                fontWeight = FontWeight.SemiBold
-                                            ),
-                                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .onFocusChanged { focusState ->
-                                                    if (focusState.isFocused) {
-                                                        viewModel.onFieldFocused(ActiveStopField.TO)
-                                                    }
-                                                }
-                                        )
-                                    }
-                                    if (state.toQuery.isNotEmpty() || state.toEndpoint != null) {
-                                        IconButton(
-                                            onClick = viewModel::clearToStop,
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = s.clear,
-                                                modifier = Modifier.size(18.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                IconButton(
-                                    onClick = viewModel::swapFromAndTo,
-                                    enabled = state.fromEndpoint != null || state.toEndpoint != null
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.SwapVert,
-                                        contentDescription = s.swapTooltip
-                                    )
-                                }
-                                Surface(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .clickable(onClick = onOpenSettings),
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surfaceVariant
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Tune,
-                                            contentDescription = s.tripFiltersTooltip,
-                                            modifier = Modifier.size(22.dp),
-                                            tint = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if (state.toEndpoint != null) {
-                            Button(
-                                onClick = {
-                                    val target = state.toEndpoint ?: return@Button
-                                    focusManager.clearFocus()
-                                    viewModel.prepareRouteSearch(target)
-                                    onOpenRouteResults()
-                                },
+                            BasicTextField(
+                                value = state.toQuery,
+                                onValueChange = viewModel::onToQueryChange,
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(50.dp),
-                                shape = RoundedCornerShape(12.dp)
+                                    .onFocusChanged { focusState ->
+                                        if (focusState.isFocused) {
+                                            viewModel.onFieldFocused(ActiveStopField.TO)
+                                        }
+                                    }
+                            )
+                        }
+                        if (state.toQuery.isNotEmpty() || state.toEndpoint != null) {
+                            IconButton(
+                                onClick = viewModel::clearToStop,
+                                modifier = Modifier.size(30.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Directions,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = s.buildRoute,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
+                                    Icons.Default.Close,
+                                    contentDescription = s.clear,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
+                        IconButton(
+                            onClick = viewModel::swapFromAndTo,
+                            enabled = state.fromEndpoint != null || state.toEndpoint != null,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SwapVert,
+                                contentDescription = s.swapTooltip,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Нижняя строка капсул: Время отправления/прибытия (18:10 ▾) + Опции ⚙
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val timeChipText = if (state.plannedTime.isNow) {
+                        s.nowLabel
+                    } else {
+                        val clock = TimeFormatUtils.formatClock(state.plannedTime.timeSec ?: 0)
+                        val modePrefix = if (state.plannedTime.mode == TimeQueryMode.ARRIVE_BY) {
+                            "${s.arriveByLabel} "
+                        } else {
+                            ""
+                        }
+                        "$modePrefix$clock"
+                    }
+
+                    Surface(
+                        modifier = Modifier.clickable { showTimePickerDialog = true },
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Schedule,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = timeChipText,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier.clickable(onClick = onOpenSettings),
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = s.optionsLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Box {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = s.tripFiltersTooltip,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                if (state.hasActiveFilters) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .align(Alignment.TopEnd)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.error)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = state.toEndpoint != null && !isSearchMode,
+                    enter = expandVertically(tween(220, easing = FastOutSlowInEasing)) + fadeIn(tween(200)),
+                    exit = shrinkVertically(tween(180, easing = FastOutSlowInEasing)) + fadeOut(tween(140))
+                ) {
+                    Button(
+                        onClick = {
+                            val target = state.toEndpoint ?: return@Button
+                            focusManager.clearFocus()
+                            viewModel.prepareRouteSearch(target)
+                            onOpenRouteResults()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Directions,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = s.buildRoute,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            // Если в режиме поиска база пуста — сразу показываем кнопку синхронизации
+        // Основное содержимое ниже поиска
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Если база пуста в режиме поиска
             if (isSearchMode && !state.graphReady) {
                 item {
-                    Card(
+                    Surface(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Column(
                             modifier = Modifier.padding(16.dp),
@@ -417,7 +510,7 @@ fun HomeScreen(
                 }
             }
 
-            // История остановок в поиске (показывается до ввода двух символов, исключая уже выбранную противоположную остановку)
+            // История остановок в поиске (до ввода 2 букв)
             val excludedOppositeName = when (state.activeField) {
                 ActiveStopField.FROM -> state.toEndpoint?.displayName?.trim()?.lowercase()
                 ActiveStopField.TO -> state.fromEndpoint?.displayName?.trim()?.lowercase()
@@ -430,9 +523,10 @@ fun HomeScreen(
             }
             if (isSearchMode && activeQuery.trim().length < 2 && visibleRecentStops.isNotEmpty()) {
                 item {
-                    Card(
+                    Surface(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Column {
                             Row(
@@ -479,7 +573,10 @@ fun HomeScreen(
                                     }
                                 )
                                 if (idx < visibleRecentStops.lastIndex) {
-                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
                                 }
                             }
                         }
@@ -487,12 +584,13 @@ fun HomeScreen(
                 }
             }
 
-            // Подсказки автодополнения: остановки (с учётом польских букв) + адреса
+            // Подсказки остановок и адресов
             if (isSearchMode && (state.searchResults.isNotEmpty() || state.addressResults.isNotEmpty())) {
                 item {
-                    Card(
+                    Surface(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Column {
                             state.searchResults.forEachIndexed { idx, group ->
@@ -515,7 +613,10 @@ fun HomeScreen(
                                     onToggleFavorite = { viewModel.toggleFavoriteStop(group.primaryStopId) }
                                 )
                                 if (idx < state.searchResults.lastIndex || state.addressResults.isNotEmpty()) {
-                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
                                 }
                             }
 
@@ -536,7 +637,10 @@ fun HomeScreen(
                                     }
                                 )
                                 if (idx < state.addressResults.lastIndex) {
-                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
                                 }
                             }
                         }
@@ -544,47 +648,15 @@ fun HomeScreen(
                 }
             }
 
-            // В режиме поиска убираем всё лишнее с главного экрана — оставляем только поиск и подсказки
+            // Основное меню (скрывается при фокусе на поиске)
             if (!isSearchMode) {
-                // Быстрый доступ к статическим расписаниям и настройкам поездки
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onOpenTimetables,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(s.timetables, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        OutlinedButton(
-                            onClick = onOpenSettings,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(s.settings, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
-
-                // 2. 3 быстрые карточки: «Домой», «В центр», «На работу»
+                // 1. Быстрые маршруты (в едином AMOLED-стиле)
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             text = s.quickRoutesTitle,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = s.quickRoutesHint,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -600,14 +672,21 @@ fun HomeScreen(
                                     destination = dest.copy(title = localizedTitle),
                                     modifier = Modifier.weight(1f),
                                     onClick = {
-                                        scope.launch {
-                                            val resolved = viewModel.resolveQuickDestinationStop(dest)
-                                            if (resolved != null) {
-                                                viewModel.prepareRouteSearchToStopId(resolved.first, resolved.second)
-                                                onOpenRouteResults()
-                                            } else {
-                                                viewModel.openQuickDestinationEditor(dest.slot)
+                                        if (!viewModel.hasLocationPermission()) {
+                                            pendingQuickDest = dest
+                                            quickLocationPermissionLauncher.launch(
+                                                arrayOf(
+                                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                                )
+                                            )
+                                        } else {
+                                            if (!viewModel.isLocationEnabled()) {
+                                                runCatching {
+                                                    context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                                }
                                             }
+                                            launchQuickRouteWithGps(dest)
                                         }
                                     },
                                     onLongClick = { viewModel.openQuickDestinationEditor(dest.slot) }
@@ -617,7 +696,7 @@ fun HomeScreen(
                     }
                 }
 
-                // 2.5. История поездок
+                // 2. Ваши маршруты (История поездок в стиле Jakdojade с зелёной/синей точкой)
                 if (tripHistory.isNotEmpty()) {
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -635,9 +714,10 @@ fun HomeScreen(
                                     Text(s.clearHistory)
                                 }
                             }
-                            Card(
+                            Surface(
                                 shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                             ) {
                                 Column {
                                     tripHistory.forEachIndexed { idx, item ->
@@ -648,24 +728,52 @@ fun HomeScreen(
                                                     viewModel.prepareRouteFromHistory(item)
                                                     onOpenRouteResults()
                                                 }
-                                                .padding(start = 14.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
-                                            verticalAlignment = Alignment.CenterVertically
+                                                .padding(start = 14.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.History,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                            Spacer(Modifier.width(10.dp))
-                                            Text(
-                                                text = "${item.fromName ?: s.myLocation} → ${item.toName}",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Medium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f)
-                                            )
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(9.dp)
+                                                        .clip(CircleShape)
+                                                        .background(DeparturePillGreen)
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(2.dp)
+                                                        .height(14.dp)
+                                                        .background(MaterialTheme.colorScheme.outline)
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(9.dp)
+                                                        .clip(CircleShape)
+                                                        .background(ArrivalPillBlue)
+                                                )
+                                            }
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = item.fromName ?: s.myLocation,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = item.toName,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                             IconButton(onClick = { viewModel.removeTripHistory(item.id) }) {
                                                 Icon(
                                                     imageVector = Icons.Default.Close,
@@ -676,7 +784,10 @@ fun HomeScreen(
                                             }
                                         }
                                         if (idx < tripHistory.lastIndex) {
-                                            HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                                            HorizontalDivider(
+                                                modifier = Modifier.padding(horizontal = 14.dp),
+                                                color = MaterialTheme.colorScheme.outlineVariant
+                                            )
                                         }
                                     }
                                 }
@@ -685,33 +796,13 @@ fun HomeScreen(
                     }
                 }
 
-                // 3. Ближайшие остановки рядом
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = s.nearbyStopsTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (state.userLocation?.isFallbackCenter == true) {
-                            Text(
-                                text = s.poznanCenter,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-
+                // Если база расписаний ещё не загружена — показываем подсказку синхронизации
                 if (!state.graphReady) {
                     item {
-                        Card(
+                        Surface(
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                         ) {
                             Column(
                                 modifier = Modifier.padding(16.dp),
@@ -733,27 +824,25 @@ fun HomeScreen(
                             }
                         }
                     }
-                } else if (state.nearbyBoards.isEmpty()) {
-                    item {
-                        Text(
-                            text = s.searchingNearby,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    items(state.nearbyBoards, key = { it.stopId }) { board ->
-                        NearbyStopCard(
-                            board = board,
-                            onClick = {
-                                viewModel.prepareRouteSearchToStopId(board.stopId, board.stopName)
-                                onOpenRouteResults()
-                            }
-                        )
-                    }
                 }
             }
         }
+    }
+
+    // Диалог планирования времени отправления / прибытия
+    if (showTimePickerDialog) {
+        PlanTimeDialog(
+            initial = state.plannedTime,
+            onDismiss = { showTimePickerDialog = false },
+            onResetNow = {
+                viewModel.resetPlannedTimeToNow()
+                showTimePickerDialog = false
+            },
+            onConfirm = { planned ->
+                viewModel.setPlannedTime(planned)
+                showTimePickerDialog = false
+            }
+        )
     }
 
     // Диалог выбора остановки для быстрой карточки
@@ -810,6 +899,137 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlanTimeDialog(
+    initial: PlannedTime,
+    onDismiss: () -> Unit,
+    onResetNow: () -> Unit,
+    onConfirm: (PlannedTime) -> Unit
+) {
+    val s = LocalStrings.current
+    val now = remember { LocalTime.now(ZoneId.of("Europe/Warsaw")) }
+    val initialMinutes = (initial.timeSec ?: now.toSecondOfDay()) / 60
+    var mode by remember { mutableStateOf(initial.mode) }
+    var hour by remember { mutableIntStateOf((initialMinutes / 60) % 24) }
+    var minute by remember { mutableIntStateOf(initialMinutes % 60) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s.planTimeTitle, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // Режим: Отправление / Прибытие
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = mode == TimeQueryMode.DEPART_AT,
+                        onClick = { mode = TimeQueryMode.DEPART_AT },
+                        label = { Text(s.departAtLabel) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = mode == TimeQueryMode.ARRIVE_BY,
+                        onClick = { mode = TimeQueryMode.ARRIVE_BY },
+                        label = { Text(s.arriveByLabel) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                // Быстрые пресеты
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = false,
+                        onClick = onResetNow,
+                        label = { Text(s.nowLabel) }
+                    )
+                    listOf(15, 30, 60).forEach { addMin ->
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                val target = LocalTime.now().plusMinutes(addMin.toLong())
+                                hour = target.hour
+                                minute = target.minute
+                            },
+                            label = { Text("+$addMin ${s.minShort}") }
+                        )
+                    }
+                }
+
+                // Выбор часа и минут
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TimeStepper(
+                        value = hour,
+                        onDecrement = { hour = (hour + 23) % 24 },
+                        onIncrement = { hour = (hour + 1) % 24 }
+                    )
+                    Text(
+                        text = ":",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp)
+                    )
+                    TimeStepper(
+                        value = minute,
+                        onDecrement = { minute = (minute + 55) % 60 },
+                        onIncrement = { minute = (minute + 5) % 60 }
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(s.close)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(PlannedTime(mode = mode, timeSec = hour * 3600 + minute * 60))
+                }
+            ) {
+                Text(s.doneLabel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun TimeStepper(
+    value: Int,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onIncrement) {
+            Icon(Icons.Default.Add, contentDescription = null)
+        }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Text(
+                text = String.format(Locale.US, "%02d", value),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+            )
+        }
+        IconButton(onClick = onDecrement) {
+            Icon(Icons.Default.Remove, contentDescription = null)
+        }
+    }
+}
+
 @Composable
 private fun RecentStopSearchRow(
     entry: RecentStopEntry,
@@ -820,7 +1040,7 @@ private fun RecentStopSearchRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -856,13 +1076,13 @@ private fun AddressSearchRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = Icons.Default.Place,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.secondary,
+            tint = ArrivalPillBlue,
             modifier = Modifier.size(20.dp)
         )
         Spacer(Modifier.width(10.dp))
@@ -896,13 +1116,14 @@ private fun QuickDestinationCard(
         QuickDestinationSlot.WORK -> Icons.Default.Work
     }
 
-    Card(
+    Surface(
         modifier = modifier.combinedClickable(
             onClick = onClick,
             onLongClick = onLongClick
         ),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f))
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -943,7 +1164,7 @@ private fun StopGroupSearchRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -983,37 +1204,32 @@ private fun NearbyStopCard(
     onClick: () -> Unit
 ) {
     val s = LocalStrings.current
-    val nowSec = LocalTime.now().toSecondOfDay()
+    val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
 
-    Card(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = board.stopName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    val platformsInfo = if (board.platformCount > 1) " • ${board.platformCount} ${s.platformsShort}" else ""
-                    Text(
-                        text = "${s.walkApprox(board.distanceMeters, (board.walkTimeSeconds + 30) / 60)} • ${s.zonePrefix} ${board.zoneId}$platformsInfo",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            Column {
+                Text(
+                    text = board.stopName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                val platformsInfo = if (board.platformCount > 1) " • ${board.platformCount} ${s.platformsShort}" else ""
+                Text(
+                    text = "${s.walkApprox(board.distanceMeters, (board.walkTimeSeconds + 30) / 60)} • ${s.zonePrefix} ${board.zoneId}$platformsInfo",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             if (board.departures.isEmpty()) {

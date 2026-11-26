@@ -129,6 +129,7 @@ class RaptorEngine {
         targetLon: Double? = null,
         targetName: String? = null
     ): List<TransitJourney> {
+        val isEvening = isEveningOrNight(departureTimeSec)
         val resolved = resolveGeneralQuery(
             data = data,
             originStopId = originStopId,
@@ -139,17 +140,23 @@ class RaptorEngine {
             targetLat = targetLat,
             targetLon = targetLon,
             targetName = targetName,
-            tripSettings = tripSettings
+            tripSettings = tripSettings,
+            isEveningOrNight = isEvening
         ) ?: return emptyList()
 
-        val effectiveMaxTransfers = tripSettings.effectiveMaxTransfers
-        val collected = LinkedHashMap<String, TransitJourney>()
+        val effectiveMaxTransfers = if (isEvening && !tripSettings.avoidTransfers) {
+            maxOf(tripSettings.effectiveMaxTransfers, 3)
+        } else {
+            tripSettings.effectiveMaxTransfers
+        }
+        val collectedByFirstTrip = LinkedHashMap<String, TransitJourney>()
         val seenTripSignatures = HashSet<String>()
-        val maxWindowEnd = departureTimeSec + UPCOMING_SEARCH_HORIZON_SEC
+        val maxWindowEnd = departureTimeSec + if (isEvening) EVENING_SEARCH_HORIZON_SEC else UPCOMING_SEARCH_HORIZON_SEC
         var cursorTime = departureTimeSec
         var iterations = 0
+        val maxIterations = if (isEvening) EVENING_MAX_TIMELINE_ITERATIONS else MAX_TIMELINE_ITERATIONS
 
-        while (collected.size < limit && cursorTime <= maxWindowEnd && iterations < MAX_TIMELINE_ITERATIONS) {
+        while (collectedByFirstTrip.size < limit && cursorTime <= maxWindowEnd && iterations < maxIterations) {
             iterations++
             val batch = searchDiverseAtTime(
                 data = data,
@@ -166,13 +173,17 @@ class RaptorEngine {
 
             var minDepartureInBatch = Int.MAX_VALUE
             for (journey in batch) {
-                if (journey.departureTimeSec < minDepartureInBatch) {
-                    minDepartureInBatch = journey.departureTimeSec
+                if (journey.transitDepartureTimeSec < minDepartureInBatch) {
+                    minDepartureInBatch = journey.transitDepartureTimeSec
                 }
                 val tripSig = journey.tripSignature()
                 if (journey.id !in excludeIds && tripSig !in seenTripSignatures) {
                     seenTripSignatures.add(tripSig)
-                    collected[journey.id] = journey
+                    val firstTripKey = journey.transitLegs.firstOrNull()?.tripId ?: journey.id
+                    val existing = collectedByFirstTrip[firstTripKey]
+                    if (existing == null || scoreJourney(journey, tripSettings) < scoreJourney(existing, tripSettings)) {
+                        collectedByFirstTrip[firstTripKey] = journey
+                    }
                 }
             }
 
@@ -180,12 +191,22 @@ class RaptorEngine {
             cursorTime = nextCursor
         }
 
-        return collected.values
+        val rawUpcoming = collectedByFirstTrip.values
             .sortedWith(
-                compareBy<TransitJourney> { it.departureTimeSec }
+                compareBy<TransitJourney> { it.transitDepartureTimeSec }
                     .thenBy { scoreJourney(it, tripSettings) }
             )
-            .take(limit)
+
+        val pruned = pruneDominatedJourneys(rawUpcoming, tripSettings)
+        // В вечернее и ночное время (21:00–05:00) оставляем все возможные варианты, чтобы человек точно смог уехать.
+        // В дневное время показываем маршруты с 2+ пересадками только когда простых вариантов (< 3) мало.
+        val simpleRoutes = pruned.filter { it.transferCount <= 1 }
+        val filtered = if (!isEvening && simpleRoutes.size >= MIN_SIMPLE_ROUTES_TO_HIDE_TWO_TRANSFERS) {
+            simpleRoutes
+        } else {
+            pruned
+        }
+        return filtered.take(limit)
     }
 
     /**
@@ -258,6 +279,75 @@ class RaptorEngine {
     }
 
     /**
+     * Поиск маршрутов с прибытием НЕ ПОЗЖЕ [arriveByTimeSec] (режим «Прибытие к …»).
+     * Возвращает до [limit] наиболее удобных рейсов (с самым поздним выездом, чтобы не выходить слишком рано),
+     * отсортированных хронологически.
+     */
+    fun searchArrivingByJourneys(
+        data: RaptorData,
+        originStopId: String?,
+        originLat: Double,
+        originLon: Double,
+        targetStopId: String?,
+        arriveByTimeSec: Int,
+        tripDelays: Map<String, Int> = emptyMap(),
+        tripSettings: TripSettings = TripSettings(),
+        limit: Int = 5,
+        originName: String = "GPS",
+        targetLat: Double? = null,
+        targetLon: Double? = null,
+        targetName: String? = null
+    ): List<TransitJourney> {
+        val resolved = resolveGeneralQuery(
+            data = data,
+            originStopId = originStopId,
+            originLat = originLat,
+            originLon = originLon,
+            originName = originName,
+            targetStopId = targetStopId,
+            targetLat = targetLat,
+            targetLon = targetLon,
+            targetName = targetName,
+            tripSettings = tripSettings
+        ) ?: return emptyList()
+
+        val effectiveMaxTransfers = tripSettings.effectiveMaxTransfers
+        val collected = LinkedHashMap<String, TransitJourney>()
+        val seenTripSignatures = HashSet<String>()
+        val minSearchTime = (arriveByTimeSec - EARLIER_SEARCH_HORIZON_SEC).coerceAtLeast(0)
+
+        var step = 1
+        while (step <= MAX_EARLIER_STEPS) {
+            val probeTime = (arriveByTimeSec - step * EARLIER_STEP_SEC).coerceAtLeast(minSearchTime)
+            val batch = searchDiverseAtTime(
+                data = data,
+                query = resolved,
+                departureTimeSec = probeTime,
+                tripDelays = tripDelays,
+                maxTransfers = effectiveMaxTransfers,
+                tripSettings = tripSettings
+            )
+            for (journey in batch) {
+                if (journey.arrivalTimeSec <= arriveByTimeSec) {
+                    val tripSig = journey.tripSignature()
+                    if (tripSig !in seenTripSignatures) {
+                        seenTripSignatures.add(tripSig)
+                        collected[journey.id] = journey
+                    }
+                }
+            }
+            if (collected.size >= limit * 2 || probeTime <= minSearchTime) break
+            step++
+        }
+
+        // Оставляем самые поздние по выезду рейсы, успевающие к arriveByTimeSec, и сортируем хронологически
+        return collected.values
+            .sortedByDescending { it.departureTimeSec }
+            .take(limit)
+            .sortedBy { it.departureTimeSec }
+    }
+
+    /**
      * Выполняет основной проход RAPTOR + дополнительные модальные проходы (только трамваи / только автобусы)
      * для выдачи разнообразных коротких вариантов доезда (например, Гурчин → Дембец: прямой автобус и трамваи с пересадкой),
      * отсеивая неразумные объезды через весь город.
@@ -271,17 +361,34 @@ class RaptorEngine {
         tripSettings: TripSettings
     ): List<TransitJourney> {
         val candidates = ArrayList<TransitJourney>(8)
+        val isEvening = isEveningOrNight(departureTimeSec)
+        val eveningFootpathOverride = if (isEvening) EVENING_MAX_TRANSFER_WALK_METERS else null
 
         // 1. Основной проход со всеми разрешёнными видами транспорта
-        val primary = executeRaptor(
+        var primary = executeRaptor(
             data = data,
             query = query,
             departureTimeSec = departureTimeSec,
             tripDelays = tripDelays,
             maxTransfers = maxTransfers,
             tripSettings = tripSettings,
-            alternativeTag = JourneyAlternativeTag.STANDARD
+            alternativeTag = JourneyAlternativeTag.STANDARD,
+            maxFootpathMetersOverride = eveningFootpathOverride
         )
+        // Если в «Удобном» / «Лучшем» режиме со строгим лимитом пешей пересадки ничего не найдено —
+        // мягко расширяем радиус пересадки до 300 м (или 450 м вечером), чтобы не оставить пользователя без маршрута
+        if (primary.isEmpty() && eveningFootpathOverride == null && tripSettings.routePreference != RoutePreference.FASTEST) {
+            primary = executeRaptor(
+                data = data,
+                query = query,
+                departureTimeSec = departureTimeSec,
+                tripDelays = tripDelays,
+                maxTransfers = maxTransfers,
+                tripSettings = tripSettings,
+                alternativeTag = JourneyAlternativeTag.STANDARD,
+                maxFootpathMetersOverride = MAX_TRANSFER_WALK_FASTEST_METERS
+            )
+        }
         candidates.addAll(primary)
 
         // 2. Разнообразие видов транспорта: если разрешены и трамваи, и автобусы — пробуем отдельные проходы
@@ -330,9 +437,10 @@ class RaptorEngine {
 
         if (candidates.isEmpty()) return emptyList()
 
-        // 3. Дедупликация по набору рейсов
+        // 3. Дедупликация по набору рейсов + отсеивание бессмысленных пересадок на ту же линию
         val uniqueByTrips = LinkedHashMap<String, TransitJourney>()
         for (j in candidates) {
+            if (hasRedundantSameLineTransfer(j)) continue
             val sig = j.tripSignature()
             val existing = uniqueByTrips[sig]
             if (existing == null || j.arrivalTimeSec < existing.arrivalTimeSec) {
@@ -346,15 +454,39 @@ class RaptorEngine {
             query.targetLat, query.targetLon
         )
 
-        // 4. Фильтр против кругов через весь город (Anti-Detour)
-        val filtered = filterOutDetours(
+        // 4. Фильтр против кругов через весь город (Anti-Detour; вечером/ночью мягче, чтобы доехать на чём угодно)
+        val noDetours = filterOutDetours(
             journeys = uniqueList,
-            directDistMeters = directDistMeters
+            directDistMeters = directDistMeters,
+            isEveningOrNight = isEvening
         )
 
-        // 5. Тегируем прямые маршруты и сортируем с учетом профиля поездки (Удобно / Лучшее / Быстрое)
-        val tagged = filtered.map { j ->
-            if (j.alternativeTag == JourneyAlternativeTag.STANDARD && j.transferCount == 0 && filtered.size > 1) {
+        // 5. Не показываем варианты с 2+ пересадками, если в этот момент уже есть маршрут с 0–1 пересадкой
+        // (вечером/ночью или когда простых вариантов нет — сохраняем 2+ пересадки, чтобы человек смог уехать)
+        val simpleOptions = noDetours.filter { it.transferCount <= 1 }
+        val transferFiltered = if (simpleOptions.isNotEmpty() && !isEvening) {
+            if (tripSettings.routePreference == RoutePreference.FASTEST) {
+                val bestSimpleArrival = simpleOptions.minOf { it.arrivalTimeSec }
+                noDetours.filter { j ->
+                    j.transferCount <= 1 || j.arrivalTimeSec <= bestSimpleArrival - FASTEST_TWO_TRANSFER_MIN_SAVING_SEC
+                }
+            } else {
+                simpleOptions
+            }
+        } else {
+            noDetours
+        }
+
+        // 6. Для одного и того же стартового рейса (firstTransit.tripId) оставляем только лучший вариант
+        // (чтобы на один автобус 702 в 20:36 не выводилось 3 дубля 702→5, 702→163, 702→5→168)
+        val bestPerFirstTrip = transferFiltered
+            .groupBy { it.transitLegs.firstOrNull()?.tripId ?: it.id }
+            .values
+            .map { group -> group.minBy { scoreJourney(it, tripSettings) } }
+
+        // 7. Тегируем прямые маршруты и сортируем с учетом профиля поездки (Удобно / Лучшее / Быстрое)
+        val tagged = bestPerFirstTrip.map { j ->
+            if (j.alternativeTag == JourneyAlternativeTag.STANDARD && j.transferCount == 0 && bestPerFirstTrip.size > 1) {
                 j.copy(alternativeTag = JourneyAlternativeTag.DIRECT)
             } else {
                 j
@@ -371,13 +503,17 @@ class RaptorEngine {
      */
     private fun filterOutDetours(
         journeys: List<TransitJourney>,
-        directDistMeters: Double
+        directDistMeters: Double,
+        isEveningOrNight: Boolean = false
     ): List<TransitJourney> {
         if (journeys.size <= 1) return journeys
 
         val bestDurationSec = journeys.minOf { (it.arrivalTimeSec - it.departureTimeSec).coerceAtLeast(60) }
         val bestArrivalSec = journeys.minOf { it.arrivalTimeSec }
         val hasDirectOption = journeys.any { it.transferCount == 0 }
+        val durationRatio = if (isEveningOrNight) EVENING_MAX_DETOUR_DURATION_RATIO else MAX_DETOUR_DURATION_RATIO
+        val extraSec = if (isEveningOrNight) EVENING_MAX_DETOUR_EXTRA_SEC else MAX_DETOUR_EXTRA_SEC
+        val distanceRatio = if (isEveningOrNight) EVENING_MAX_DETOUR_DISTANCE_RATIO else MAX_DETOUR_DISTANCE_RATIO
 
         val kept = journeys.filter { j ->
             val durationSec = (j.arrivalTimeSec - j.departureTimeSec).coerceAtLeast(60)
@@ -385,12 +521,12 @@ class RaptorEngine {
 
             // Всегда оставляем абсолютно самый быстрый по прибытию вариант (если он сам не безумный)
             val isFastestArrival = j.arrivalTimeSec == bestArrivalSec
-            if (isFastestArrival && (directDistMeters < 1000.0 || travelledDist <= directDistMeters * 3.0)) {
+            if (isFastestArrival && (directDistMeters < 1000.0 || travelledDist <= directDistMeters * 3.5)) {
                 return@filter true
             }
 
             // Проверка 1: длительность поездки не должна быть чрезмерно больше лучшего варианта
-            val maxAllowedDuration = (bestDurationSec * MAX_DETOUR_DURATION_RATIO).toInt() + MAX_DETOUR_EXTRA_SEC
+            val maxAllowedDuration = (bestDurationSec * durationRatio).toInt() + extraSec
             if (durationSec > maxAllowedDuration) {
                 return@filter false
             }
@@ -402,7 +538,7 @@ class RaptorEngine {
                         MAX_MODAL_DETOUR_RATIO
                     j.alternativeTag == JourneyAlternativeTag.BUS_ONLY && j.transferCount > 0 && hasDirectOption ->
                         MAX_MODAL_DETOUR_RATIO
-                    else -> MAX_DETOUR_DISTANCE_RATIO
+                    else -> distanceRatio
                 }
                 if (travelledDist > directDistMeters * maxRatio) {
                     return@filter false
@@ -434,31 +570,132 @@ class RaptorEngine {
         return total
     }
 
+    /**
+     * Максимальная дистанция пешей пересадки между разными остановками в зависимости от режима:
+     * - FASTEST (Быстрый): до 300 м
+     * - BEST (Лучший): золотая середина — до 220 м
+     * - CONVENIENT (Удобный): избегает смены остановок пешком — до 120 м
+     */
+    private fun maxTransferWalkMeters(preference: RoutePreference): Int = when (preference) {
+        RoutePreference.FASTEST -> MAX_TRANSFER_WALK_FASTEST_METERS
+        RoutePreference.BEST -> MAX_TRANSFER_WALK_BEST_METERS
+        RoutePreference.CONVENIENT -> MAX_TRANSFER_WALK_CONVENIENT_METERS
+    }
+
+    /**
+     * Многокритериальная оценка маршрута (как в Jakdojade / McRAPTOR):
+     * - FASTEST: минимальное время прибытия, короткие пересадки до 300 м, без лишних пересадок
+     * - CONVENIENT: минимум пересадок и минимум пеших переходов между разными остановками
+     * - BEST: сбалансированный вариант между Быстрым и Удобным
+     */
     private fun scoreJourney(journey: TransitJourney, settings: TripSettings): Int {
         val durationSec = (journey.arrivalTimeSec - journey.departureTimeSec).coerceAtLeast(0)
-        val walkMeters = journey.totalWalkMeters
+        val walkSec = journey.legs.filterIsInstance<JourneyLeg.WalkLeg>().sumOf { it.durationSec }
+        val transferWaitSec = computeTransferWaitSeconds(journey)
+        val crossStopTransferCount = countCrossStopWalkTransfers(journey)
+        val tramLegCount = journey.transitLegs.count { it.isTram }
         val preferredMatches = journey.transitLegs.count { settings.isLinePreferred(it.routeShortName) }
-        val preferredBonus = preferredMatches * 180
-        val avoidTransfersPenalty = if (settings.avoidTransfers) journey.transferCount * 600 else 0
+        val preferredBonus = preferredMatches * 210
+        val avoidTransfersPenalty = if (settings.avoidTransfers) journey.transferCount * 720 else 0
 
         return when (settings.routePreference) {
             RoutePreference.FASTEST ->
-                journey.arrivalTimeSec + avoidTransfersPenalty - preferredBonus / 2
+                journey.arrivalTimeSec +
+                    journey.transferCount * 90 +
+                    (walkSec * 0.25).toInt() +
+                    avoidTransfersPenalty -
+                    preferredBonus / 2
 
             RoutePreference.BEST ->
                 durationSec +
-                    journey.transferCount * 240 +
-                    (walkMeters / 2) +
+                    journey.transferCount * 300 +
+                    crossStopTransferCount * 120 +
+                    (transferWaitSec * 0.55).toInt() +
+                    (walkSec * 0.90).toInt() -
+                    tramLegCount * 45 +
                     avoidTransfersPenalty -
                     preferredBonus
 
             RoutePreference.CONVENIENT ->
                 durationSec +
-                    journey.transferCount * 540 +
-                    (walkMeters * 2) +
+                    journey.transferCount * 720 +
+                    crossStopTransferCount * 360 +
+                    (transferWaitSec * 0.95).toInt() +
+                    (walkSec * 1.90).toInt() -
+                    tramLegCount * 60 +
                     avoidTransfersPenalty -
                     preferredBonus
         }
+    }
+
+    /**
+     * Подсчитывает число пересадок, требующих пешего перехода на другую остановку (> 15 м).
+     */
+    private fun countCrossStopWalkTransfers(journey: TransitJourney): Int {
+        val legs = journey.legs
+        var count = 0
+        for (i in 1 until legs.lastIndex) {
+            val leg = legs[i]
+            if (leg is JourneyLeg.WalkLeg && leg.distanceMeters > 15 &&
+                legs[i - 1] is JourneyLeg.TransitLeg && legs[i + 1] is JourneyLeg.TransitLeg
+            ) {
+                count++
+            }
+        }
+        return count
+    }
+
+    /**
+     * Суммарное время ожидания на пересадках между сегментами транспорта.
+     */
+    private fun computeTransferWaitSeconds(journey: TransitJourney): Int {
+        val transit = journey.transitLegs
+        if (transit.size < 2) return 0
+        var totalWait = 0
+        for (i in 0 until transit.lastIndex) {
+            val gap = (transit[i + 1].startTimeSec - transit[i].endTimeSec).coerceAtLeast(0)
+            totalWait += gap
+        }
+        return totalWait
+    }
+
+    /**
+     * Проверяет, нет ли в маршруте бессмысленной пересадки с линии X на ту же линию X.
+     */
+    private fun hasRedundantSameLineTransfer(journey: TransitJourney): Boolean {
+        val transit = journey.transitLegs
+        for (i in 0 until transit.lastIndex) {
+            if (transit[i].routeShortName.equals(transit[i + 1].routeShortName, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Парето-фильтрация: убирает строго доминируемые маршруты, которые выезжают раньше (или так же),
+     * но приезжают позже (или так же) при большем или равном числе пересадок и сопоставимой пешей части.
+     */
+    private fun pruneDominatedJourneys(
+        journeys: List<TransitJourney>,
+        settings: TripSettings
+    ): List<TransitJourney> {
+        if (journeys.size <= 1) return journeys
+        return journeys.filter { candidate ->
+            val isDominated = journeys.any { other ->
+                if (other.id == candidate.id) return@any false
+                val leavesLaterOrSame = other.transitDepartureTimeSec >= candidate.transitDepartureTimeSec
+                val arrivesEarlierOrSame = other.arrivalTimeSec <= candidate.arrivalTimeSec
+                val strictlyBetterTime = other.transitDepartureTimeSec > candidate.transitDepartureTimeSec ||
+                    other.arrivalTimeSec < candidate.arrivalTimeSec
+                val notMoreTransfers = other.transferCount <= candidate.transferCount
+                val comparableWalk = other.totalWalkMeters <= candidate.totalWalkMeters + 150
+                val sameModeOrBetterScore = scoreJourney(other, settings) <= scoreJourney(candidate, settings)
+                leavesLaterOrSame && arrivesEarlierOrSame && strictlyBetterTime &&
+                    notMoreTransfers && comparableWalk && sameModeOrBetterScore
+            }
+            !isDominated
+        }.ifEmpty { journeys }
     }
 
     private fun findNearbyAccesses(
@@ -507,24 +744,37 @@ class RaptorEngine {
         targetLat: Double?,
         targetLon: Double?,
         targetName: String?,
-        tripSettings: TripSettings
+        tripSettings: TripSettings,
+        isEveningOrNight: Boolean = false
     ): ResolvedQuery? {
         val originAccesses: List<OriginAccess>
         val resolvedOriginLat: Double
         val resolvedOriginLon: Double
+        val originNearbyMeters = if (isEveningOrNight) 650.0 else 500.0
+        val targetEgressMeters = if (isEveningOrNight) 450.0 else 300.0
 
         if (!originStopId.isNullOrBlank()) {
             val originIndices = data.findSiblingStopIndices(originStopId)
             if (originIndices.isEmpty()) return null
-            originAccesses = originIndices.map { OriginAccess(it, 0, 0) }
             resolvedOriginLat = data.stopLats[originIndices[0]]
             resolvedOriginLon = data.stopLons[originIndices[0]]
+            val ownSet = originIndices.toHashSet()
+            val ownAccesses = originIndices.map { OriginAccess(it, 0, 0) }
+            // Добавляем также ближайшие остановки в пешей доступности (до 500 м днём, до 650 м вечером/ночью)
+            val nearbyAccesses = findNearbyAccesses(
+                data = data,
+                lat = resolvedOriginLat,
+                lon = resolvedOriginLon,
+                maxMeters = originNearbyMeters,
+                tripSettings = tripSettings
+            ).filter { it.stopIdx !in ownSet }
+            originAccesses = ownAccesses + nearbyAccesses
         } else {
             originAccesses = findNearbyAccesses(
                 data = data,
                 lat = originLat,
                 lon = originLon,
-                maxMeters = AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS,
+                maxMeters = if (isEveningOrNight) maxOf(AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS, 750.0) else AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS,
                 tripSettings = tripSettings
             )
             if (originAccesses.isEmpty()) return null
@@ -536,13 +786,24 @@ class RaptorEngine {
         val resolvedTargetLat: Double
         val resolvedTargetLon: Double
         val targetEgressMap: Map<Int, OriginAccess>
+        val ownTargetSet: Set<Int>
 
         if (!targetStopId.isNullOrBlank()) {
-            targetStopIndices = data.findSiblingStopIndices(targetStopId)
-            if (targetStopIndices.isEmpty()) return null
-            resolvedTargetLat = data.stopLats[targetStopIndices[0]]
-            resolvedTargetLon = data.stopLons[targetStopIndices[0]]
-            targetEgressMap = emptyMap()
+            val ownTargets = data.findSiblingStopIndices(targetStopId)
+            if (ownTargets.isEmpty()) return null
+            ownTargetSet = ownTargets.toHashSet()
+            resolvedTargetLat = data.stopLats[ownTargets[0]]
+            resolvedTargetLon = data.stopLons[ownTargets[0]]
+            // Позволяем также выйти на ближайшей соседней остановке (до 300 м днём, до 450 м вечером/ночью)
+            val nearbyEgress = findNearbyAccesses(
+                data = data,
+                lat = resolvedTargetLat,
+                lon = resolvedTargetLon,
+                maxMeters = targetEgressMeters,
+                tripSettings = tripSettings
+            ).filter { it.stopIdx !in ownTargetSet }
+            targetStopIndices = (ownTargets.toList() + nearbyEgress.map { it.stopIdx }).toIntArray()
+            targetEgressMap = nearbyEgress.associateBy { it.stopIdx }
         } else if (targetLat != null && targetLon != null) {
             val egressAccesses = findNearbyAccesses(
                 data = data,
@@ -553,6 +814,7 @@ class RaptorEngine {
             )
             if (egressAccesses.isEmpty()) return null
             targetStopIndices = egressAccesses.map { it.stopIdx }.toIntArray()
+            ownTargetSet = targetStopIndices.toHashSet()
             resolvedTargetLat = targetLat
             resolvedTargetLon = targetLon
             targetEgressMap = egressAccesses.associateBy { it.stopIdx }
@@ -560,20 +822,33 @@ class RaptorEngine {
             return null
         }
 
-        val targetSet = targetStopIndices.toHashSet()
-        if (!originStopId.isNullOrBlank() && !targetStopId.isNullOrBlank() && originAccesses.any { it.stopIdx in targetSet }) {
+        // Проверяем совпадение только среди собственных платформ старта и финиша (чтобы короткие поездки < 500 м не отменялись!)
+        val ownOriginSet = if (!originStopId.isNullOrBlank()) {
+            data.findSiblingStopIndices(originStopId).toHashSet()
+        } else {
+            emptySet()
+        }
+        if (ownOriginSet.isNotEmpty() && !targetStopId.isNullOrBlank() && ownOriginSet.any { it in ownTargetSet }) {
             return null
         }
 
+        // Исключаем целевые остановки из пешего стартового доступа, чтобы всегда строился транзитный маршрут
+        val cleanedOriginAccesses = originAccesses.filter { it.stopIdx !in ownTargetSet }
+        if (cleanedOriginAccesses.isEmpty()) return null
+
+        val resolvedTargetDisplayName = targetName ?: targetStopId?.let { id ->
+            data.stopIdToIndex[id]?.let { data.stopNames[it] }
+        }
+
         return ResolvedQuery(
-            originAccesses = originAccesses,
+            originAccesses = cleanedOriginAccesses,
             originLat = resolvedOriginLat,
             originLon = resolvedOriginLon,
             originName = originName,
             targetStopIndices = targetStopIndices,
             targetLat = resolvedTargetLat,
             targetLon = resolvedTargetLon,
-            targetName = targetName,
+            targetName = resolvedTargetDisplayName,
             targetEgressMap = targetEgressMap
         )
     }
@@ -762,7 +1037,8 @@ class RaptorEngine {
         tripDelays: Map<String, Int>,
         maxTransfers: Int,
         tripSettings: TripSettings,
-        alternativeTag: JourneyAlternativeTag
+        alternativeTag: JourneyAlternativeTag,
+        maxFootpathMetersOverride: Int? = null
     ): List<TransitJourney> {
         val originAccesses = query.originAccesses
         val targetStopIndices = query.targetStopIndices
@@ -772,7 +1048,12 @@ class RaptorEngine {
         val rounds = maxTransfers + 1
         val stopCount = data.stopCount
         val patternCount = data.patternCount
-        val minTransferSec = maxOf(MIN_SAME_STOP_TRANSFER_SEC, tripSettings.minTransferSeconds)
+        val minTransferSec = if (tripSettings.routePreference == RoutePreference.FASTEST) {
+            maxOf(MIN_SAME_STOP_TRANSFER_SEC, minOf(tripSettings.minTransferSeconds, 90))
+        } else {
+            maxOf(MIN_SAME_STOP_TRANSFER_SEC, tripSettings.minTransferSeconds)
+        }
+        val maxFootpathMeters = maxFootpathMetersOverride ?: maxTransferWalkMeters(tripSettings.routePreference)
 
         val isTargetStop = BooleanArray(stopCount)
         for (tIdx in targetStopIndices) {
@@ -963,10 +1244,12 @@ class RaptorEngine {
                 for (f in fpStart until fpEnd) {
                     val toStop = data.footpathToStop[f]
                     if (!allowedStop[toStop]) continue
+                    // Ограничиваем длину пешей пересадки по профилю (Быстрый ≤300м, Лучший ≤220м, Удобный ≤120м)
+                    if (!isTargetStop[toStop] && data.footpathDistanceMeters[f] > maxFootpathMeters) continue
                     val transferTime = if (isTargetStop[toStop]) {
                         data.footpathWalkSec[f]
                     } else {
-                        maxOf(data.footpathWalkSec[f], tripSettings.minTransferSeconds)
+                        maxOf(data.footpathWalkSec[f], minTransferSec)
                     }
                     val walkArr = baseTime + transferTime
                     if (walkArr < bestArrival[toStop] && walkArr < targetBest) {
@@ -1222,14 +1505,29 @@ class RaptorEngine {
         }
 
         if (legsReversed.isEmpty()) return null
-        val legs = legsReversed.reversed()
-        val transitLegs = legs.filterIsInstance<JourneyLeg.TransitLeg>()
+        val rawLegs = legsReversed.reversed()
+        val transitLegs = rawLegs.filterIsInstance<JourneyLeg.TransitLeg>()
         if (transitLegs.isEmpty()) return null
+
+        // Сдвигаем стартовый пеший участок вплотную к первому рейсу,
+        // чтобы не выходить на 30–60 мин раньше и не искажать время отправления и длительность поездки
+        val firstTransit = transitLegs.first()
+        val legs = if (rawLegs.firstOrNull() is JourneyLeg.WalkLeg) {
+            val firstWalk = rawLegs.first() as JourneyLeg.WalkLeg
+            val walkDur = firstWalk.durationSec
+            val idealStart = (firstTransit.startTimeSec - walkDur).coerceAtLeast(departureTimeSec)
+            val shiftedWalk = firstWalk.copy(
+                startTimeSec = idealStart,
+                endTimeSec = idealStart + walkDur
+            )
+            listOf(shiftedWalk) + rawLegs.drop(1)
+        } else {
+            rawLegs
+        }
 
         val ticket = ZtmTicketCalculator.calculateForLegs(legs, isUlgowy = isUlgowyTicket)
 
         val firstWalk = legs.firstOrNull() as? JourneyLeg.WalkLeg
-        val firstTransit = transitLegs.first()
         val catchability = if (firstWalk != null) {
             val secondsUntilDep = (firstTransit.startTimeSec - departureTimeSec).coerceAtLeast(0)
             val margin = secondsUntilDep - firstWalk.durationSec
@@ -1272,6 +1570,11 @@ class RaptorEngine {
     private fun TransitJourney.tripSignature(): String =
         transitLegs.joinToString("|") { it.tripId }
 
+    private fun isEveningOrNight(timeSec: Int): Boolean {
+        val mod = ((timeSec % 86400) + 86400) % 86400
+        return mod >= 21 * 3600 || mod < 5 * 3600
+    }
+
     companion object {
         private const val INF = Int.MAX_VALUE / 4
         private const val PARENT_NONE = 0
@@ -1283,8 +1586,10 @@ class RaptorEngine {
         private const val MAX_EXPECTED_EARLY_SEC = 3 * 60
 
         private const val UPCOMING_SEARCH_HORIZON_SEC = 8 * 3600
+        private const val EVENING_SEARCH_HORIZON_SEC = 10 * 3600
         private const val EMPTY_STEP_SEC = 15 * 60
         private const val MAX_TIMELINE_ITERATIONS = 32
+        private const val EVENING_MAX_TIMELINE_ITERATIONS = 42
 
         private const val EARLIER_SEARCH_HORIZON_SEC = 3 * 3600
         private const val EARLIER_STEP_SEC = 10 * 60
@@ -1292,8 +1597,18 @@ class RaptorEngine {
 
         private const val MIN_DIST_FOR_DETOUR_CHECK_METERS = 800.0
         private const val MAX_DETOUR_DISTANCE_RATIO = 2.50
+        private const val EVENING_MAX_DETOUR_DISTANCE_RATIO = 3.50
         private const val MAX_MODAL_DETOUR_RATIO = 2.25
         private const val MAX_DETOUR_DURATION_RATIO = 1.65
+        private const val EVENING_MAX_DETOUR_DURATION_RATIO = 2.20
         private const val MAX_DETOUR_EXTRA_SEC = 10 * 60
+        private const val EVENING_MAX_DETOUR_EXTRA_SEC = 20 * 60
+
+        private const val MAX_TRANSFER_WALK_FASTEST_METERS = 300
+        private const val MAX_TRANSFER_WALK_BEST_METERS = 220
+        private const val MAX_TRANSFER_WALK_CONVENIENT_METERS = 120
+        private const val EVENING_MAX_TRANSFER_WALK_METERS = 450
+        private const val MIN_SIMPLE_ROUTES_TO_HIDE_TWO_TRANSFERS = 3
+        private const val FASTEST_TWO_TRANSFER_MIN_SAVING_SEC = 8 * 60
     }
 }

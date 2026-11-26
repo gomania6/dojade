@@ -1,5 +1,12 @@
 package pl.poznan.offdojade.ui.timetables
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,11 +66,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
 import pl.poznan.offdojade.data.local.entity.RouteEntity
+import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.routing.StaticDepartureEntry
 import pl.poznan.offdojade.domain.routing.StaticStopTimetable
 import pl.poznan.offdojade.domain.routing.TimetableDayType
 import pl.poznan.offdojade.ui.components.LineBadge
 import pl.poznan.offdojade.ui.localization.LocalStrings
+import pl.poznan.offdojade.ui.theme.NightBusOnWhite
+import pl.poznan.offdojade.ui.theme.NightBusWhite
 import java.time.LocalTime
 import java.util.Locale
 
@@ -72,11 +82,13 @@ import java.util.Locale
 fun TimetablesScreen(
     onBack: () -> Unit,
     onOpenSync: () -> Unit,
+    showBackButton: Boolean = true,
     viewModel: TimetablesViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val s = LocalStrings.current
 
+    val isNested = state.selectedStop != null || state.selectedRoute != null
     val handleBack: () -> Unit = {
         when {
             state.selectedStop != null -> viewModel.clearSelectedStop()
@@ -86,11 +98,14 @@ fun TimetablesScreen(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = handleBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
+                    if (showBackButton || isNested) {
+                        IconButton(onClick = handleBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
+                        }
                     }
                 },
                 title = {
@@ -109,42 +124,64 @@ fun TimetablesScreen(
             )
         }
     ) { padding ->
-        when {
-            state.selectedStop != null && state.selectedRoute != null -> {
-                StopTimetableGrid(
-                    route = state.selectedRoute!!,
-                    stop = state.selectedStop!!,
-                    dayType = state.selectedDayType,
-                    onSelectDayType = viewModel::selectDayType,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                )
-            }
+        val viewLevel = when {
+            state.selectedStop != null && state.selectedRoute != null -> 2
+            state.selectedRoute != null -> 1
+            else -> 0
+        }
+        AnimatedContent(
+            targetState = viewLevel,
+            transitionSpec = {
+                if (targetState > initialState) {
+                    (slideInHorizontally(tween(240)) { it / 6 } + fadeIn(tween(220))) togetherWith
+                        (slideOutHorizontally(tween(200)) { -it / 10 } + fadeOut(tween(160)))
+                } else {
+                    (slideInHorizontally(tween(240)) { -it / 6 } + fadeIn(tween(220))) togetherWith
+                        (slideOutHorizontally(tween(200)) { it / 10 } + fadeOut(tween(160)))
+                }
+            },
+            label = "timetablesLevelTransition",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) { level ->
+            when (level) {
+                2 -> {
+                    val route = state.selectedRoute
+                    val stop = state.selectedStop
+                    if (route != null && stop != null) {
+                        StopTimetableGrid(
+                            route = route,
+                            stop = stop,
+                            dayType = state.selectedDayType,
+                            onSelectDayType = viewModel::selectDayType,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
 
-            state.selectedRoute != null -> {
-                RouteStopsView(
-                    state = state,
-                    onSelectDayType = viewModel::selectDayType,
-                    onSelectDirection = viewModel::selectDirection,
-                    onSelectStop = viewModel::selectStop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                )
-            }
+                1 -> {
+                    if (state.selectedRoute != null) {
+                        RouteStopsView(
+                            state = state,
+                            onSelectDayType = viewModel::selectDayType,
+                            onSelectDirection = viewModel::selectDirection,
+                            onSelectStop = viewModel::selectStop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
 
-            else -> {
-                LinesBrowserView(
-                    state = state,
-                    onSearchChange = viewModel::onSearchQueryChange,
-                    onCategoryChange = viewModel::onCategoryChange,
-                    onSelectRoute = viewModel::selectRoute,
-                    onOpenSync = onOpenSync,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                )
+                else -> {
+                    LinesBrowserView(
+                        state = state,
+                        onSearchChange = viewModel::onSearchQueryChange,
+                        onCategoryChange = viewModel::onCategoryChange,
+                        onSelectRoute = viewModel::selectRoute,
+                        onOpenSync = onOpenSync,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
     }
@@ -272,16 +309,21 @@ private fun LinesBrowserView(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(state.filteredRoutes, key = { it.routeId }) { route ->
+                        val isNightBus = route.routeType != 0 && TransportMode.isNightLine(route.shortName)
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(42.dp)
                                 .clickable { onSelectRoute(route) },
                             shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surface,
+                            color = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(
                                 width = 1.dp,
-                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                                color = if (isNightBus) {
+                                    NightBusWhite
+                                } else {
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                                }
                             )
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -289,6 +331,7 @@ private fun LinesBrowserView(
                                     text = route.shortName,
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
+                                    color = if (isNightBus) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1
                                 )
                             }

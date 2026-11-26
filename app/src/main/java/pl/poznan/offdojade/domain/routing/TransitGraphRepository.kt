@@ -389,7 +389,89 @@ class TransitGraphRepository(
             )
         }
     }
+
+    /**
+     * Вычисляет для конкретного сегмента поездки:
+     * 1. Альтернативные линии, которые также напрямую связывают остановку посадки и остановку высадки.
+     * 2. Примерный интервал отправлений (в минутах) на этом участке в окне ±45 минут.
+     */
+    fun computeLegInsight(
+        boardingStopId: String,
+        alightingStopId: String,
+        routeShortName: String,
+        departureTimeSec: Int
+    ): TransitLegInsight {
+        val g = _graph.value ?: return TransitLegInsight()
+        val boardSiblings = g.findSiblingStopIndices(boardingStopId)
+        val alightSiblings = g.findSiblingStopIndices(alightingStopId).toHashSet()
+        if (boardSiblings.isEmpty() || alightSiblings.isEmpty()) return TransitLegInsight()
+
+        val windowStart = departureTimeSec - 30 * 60
+        val windowEnd = departureTimeSec + 60 * 60
+
+        val altLines = LinkedHashSet<String>()
+        val corridorDepartures = ArrayList<Int>(32)
+        val visitedPatterns = HashSet<Int>()
+
+        for (bStopIdx in boardSiblings) {
+            val pStart = g.stopToPatternOffsets[bStopIdx]
+            val pEnd = g.stopToPatternOffsets[bStopIdx + 1]
+            for (idx in pStart until pEnd) {
+                val p = g.stopToPatterns[idx]
+                if (!visitedPatterns.add(p)) continue
+                val bPos = g.stopToPatternPos[idx]
+                val pStopCount = g.patternStopCount(p)
+
+                var reachesTarget = false
+                for (pos in (bPos + 1) until pStopCount) {
+                    if (g.patternStopAt(p, pos) in alightSiblings) {
+                        reachesTarget = true
+                        break
+                    }
+                }
+                if (!reachesTarget) continue
+
+                val lineName = g.patternRouteShortName[p]
+                val tStart = g.patternTripOffsets[p]
+                val tEnd = g.patternTripOffsets[p + 1]
+                var hasDepInWindow = false
+                for (t in tStart until tEnd) {
+                    val dep = g.tripDepartureAt(t, bPos)
+                    if (dep in windowStart..windowEnd) {
+                        corridorDepartures.add(dep)
+                        hasDepInWindow = true
+                    }
+                }
+                if (hasDepInWindow && !lineName.equals(routeShortName, ignoreCase = true)) {
+                    altLines.add(lineName)
+                }
+            }
+        }
+
+        val sortedDeps = corridorDepartures.distinct().sorted()
+        val headwayMin = if (sortedDeps.size >= 2) {
+            val totalSpanSec = sortedDeps.last() - sortedDeps.first()
+            val avgSec = totalSpanSec / (sortedDeps.size - 1)
+            ((avgSec + 30) / 60).coerceAtLeast(1)
+        } else {
+            null
+        }
+
+        val sortedAlts = altLines.sortedWith(
+            compareBy<String>({ it.toIntOrNull() ?: Int.MAX_VALUE }, { it })
+        ).take(6)
+
+        return TransitLegInsight(
+            alternativeLines = sortedAlts,
+            approxHeadwayMinutes = headwayMin
+        )
+    }
 }
+
+data class TransitLegInsight(
+    val alternativeLines: List<String> = emptyList(),
+    val approxHeadwayMinutes: Int? = null
+)
 
 enum class TimetableDayType {
     TODAY,

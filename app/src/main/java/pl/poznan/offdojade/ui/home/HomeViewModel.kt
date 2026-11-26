@@ -23,13 +23,16 @@ import pl.poznan.offdojade.data.realtime.RealtimeRepository
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.AddressResult
 import pl.poznan.offdojade.domain.model.NearbyStopBoard
+import pl.poznan.offdojade.domain.model.PlannedTime
 import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.RouteSearchRequest
 import pl.poznan.offdojade.domain.model.StopGroup
+import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import java.time.LocalTime
+import java.time.ZoneId
 
 enum class ActiveStopField {
     FROM,
@@ -46,6 +49,8 @@ data class HomeUiState(
     val activeField: ActiveStopField? = null,
     val searchResults: List<StopGroup> = emptyList(),
     val addressResults: List<AddressResult> = emptyList(),
+    val plannedTime: PlannedTime = PlannedTime(),
+    val hasActiveFilters: Boolean = false,
 
     val nearbyBoards: List<NearbyStopBoard> = emptyList(),
     val userLocation: UserLocation? = null,
@@ -95,6 +100,19 @@ class HomeViewModel(
                 recomputeNearbyBoards()
             }
         }
+        viewModelScope.launch {
+            preferencesRepository.appSettings.collect { settings ->
+                _uiState.update { it.copy(hasActiveFilters = settings.tripSettings.hasActiveFilters) }
+            }
+        }
+    }
+
+    fun setPlannedTime(plannedTime: PlannedTime) {
+        _uiState.update { it.copy(plannedTime = plannedTime) }
+    }
+
+    fun resetPlannedTimeToNow() {
+        _uiState.update { it.copy(plannedTime = PlannedTime(TimeQueryMode.DEPART_AT, null)) }
     }
 
     fun refreshDashboard() {
@@ -316,7 +334,8 @@ class HomeViewModel(
         transitGraphRepository.setActiveSearchRequest(
             RouteSearchRequest(
                 from = from,
-                to = to
+                to = to,
+                plannedTime = _uiState.value.plannedTime
             )
         )
         recordTripHistory(from, to)
@@ -373,7 +392,13 @@ class HomeViewModel(
             )
         }
 
-        transitGraphRepository.setActiveSearchRequest(RouteSearchRequest(from = from, to = to))
+        transitGraphRepository.setActiveSearchRequest(
+            RouteSearchRequest(
+                from = from,
+                to = to,
+                plannedTime = _uiState.value.plannedTime
+            )
+        )
         recordTripHistory(from, to)
     }
 
@@ -424,6 +449,43 @@ class HomeViewModel(
                 )
             )
         }
+    }
+
+    fun hasLocationPermission(): Boolean = locationProvider.hasLocationPermission()
+
+    fun isLocationEnabled(): Boolean = locationProvider.isLocationEnabled()
+
+    /**
+     * Быстрый маршрут: включает/обновляет свежую GPS-геолокацию и строит маршрут
+     * от ближайшей подходящей остановки к текущему местоположению пользователя.
+     */
+    suspend fun prepareQuickRouteFromGps(stopId: String, stopName: String) {
+        val freshLoc = locationProvider.getFreshOrFallbackLocation()
+        _uiState.update {
+            it.copy(
+                userLocation = freshLoc,
+                fromEndpoint = null,
+                fromQuery = ""
+            )
+        }
+        val group = StopGroup(
+            displayName = stopName,
+            primaryStopId = stopId,
+            stopIds = listOf(stopId),
+            zones = listOf("A"),
+            platformCount = 1,
+            latitude = 0.0,
+            longitude = 0.0
+        )
+        val target = RouteEndpoint.Stop(group)
+        transitGraphRepository.setActiveSearchRequest(
+            RouteSearchRequest(
+                from = null,
+                to = target,
+                plannedTime = _uiState.value.plannedTime
+            )
+        )
+        recordTripHistory(null, target)
     }
 
     fun prepareRouteSearchToStopId(stopId: String, stopName: String) {
@@ -491,7 +553,7 @@ class HomeViewModel(
     private fun recomputeNearbyBoards() {
         val graph = transitGraphRepository.graph.value ?: return
         val loc = _uiState.value.userLocation ?: return
-        val nowSec = LocalTime.now().toSecondOfDay()
+        val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
         val boards = raptorEngine.findNearbyStopBoards(
             data = graph,
             userLat = loc.latitude,

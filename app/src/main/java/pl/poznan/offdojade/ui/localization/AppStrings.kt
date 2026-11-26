@@ -186,8 +186,41 @@ data class AppStrings(
     val ulgowyTicketTitle: String,
     val ulgowyTicketDesc: String,
     val tariffNormal: String,
-    val tariffUlgowy: String
+    val tariffUlgowy: String,
+
+    // Bottom navigation & time planning
+    val navRoute: String,
+    val optionsLabel: String,
+    val nowLabel: String,
+    val departAtLabel: String,
+    val arriveByLabel: String,
+    val planTimeTitle: String,
+    val doneLabel: String,
+
+    // Schedule status, alternatives, frequency & live vehicle popup
+    val departureOnSchedule: String,
+    val departureDelayedBy: (Int) -> String,
+    val departureEarlyBy: (Int) -> String,
+    val approxEveryMinutes: (Int) -> String,
+    val alternativesLabel: String,
+    val waitShort: String,
+    val waitMinutes: (Int) -> String,
+    val waitOnly: String,
+    val walkAndWait: (Int, Int) -> String,
+    val walkMinutesOnly: (Int) -> String,
+    val transferSameStop: String,
+    val updatedMinSecAgo: (Long, Long) -> String,
+    val updatedSecAgo: (Long) -> String,
+    val vehicleLateBy: (Int) -> String,
+    val vehicleEarlyBy: (Int) -> String,
+    val vehicleOnSchedule: String,
+    val ticket24hLabel: String,
+    val tightFitWarningText: (Int, Int, Int, Int, String, String, String) -> String
 ) {
+    fun ticketDurationLabel(ticketId: String, maxMinutes: Int): String = when (ticketId) {
+        "t24h" -> ticket24hLabel
+        else -> "$maxMinutes $minShort"
+    }
     fun themeName(mode: ThemeMode): String = when (mode) {
         ThemeMode.SYSTEM -> themeSystem
         ThemeMode.LIGHT -> themeLight
@@ -396,7 +429,37 @@ private val RussianStrings = AppStrings(
     ulgowyTicketTitle = "Льготный билет (Ulgowy 50%)",
     ulgowyTicketDesc = "Скидка 50% на все билеты и tPortmonetka (предел 9 zł вместо 18 zł)",
     tariffNormal = "Normalny",
-    tariffUlgowy = "Ulgowy -50%"
+    tariffUlgowy = "Ulgowy -50%",
+
+    navRoute = "Маршрут",
+    optionsLabel = "Опции",
+    nowLabel = "Сейчас",
+    departAtLabel = "Отправление",
+    arriveByLabel = "Прибытие",
+    planTimeTitle = "Время поездки",
+    doneLabel = "Готово",
+
+    departureOnSchedule = "Отправление по расписанию",
+    departureDelayedBy = { "Отправление задерживается на $it мин" },
+    departureEarlyBy = { "Отправление на $it мин раньше" },
+    approxEveryMinutes = { "Отправление примерно каждые $it мин" },
+    alternativesLabel = "Альтернативы:",
+    waitShort = "ждать",
+    waitMinutes = { "Ждать $it мин" },
+    waitOnly = "Ждать",
+    walkAndWait = { w, wt -> "Пройти $w мин и ждать $wt мин" },
+    walkMinutesOnly = { "Пройти $it мин" },
+    transferSameStop = "Пересадка на той же остановке",
+    updatedMinSecAgo = { m, sec -> "Обновлено: $m мин $sec сек назад" },
+    updatedSecAgo = { sec -> "Обновлено: $sec сек назад" },
+    vehicleLateBy = { "Опаздывает на +$it мин" },
+    vehicleEarlyBy = { "Опережает расписание на $it мин" },
+    vehicleOnSchedule = "Едет по расписанию",
+    ticket24hLabel = "24 часа",
+    tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
+        val dPart = if (delay > 0) "опоздания +$delay мин и " else ""
+        "Чистое время $pure мин, но с учётом ${dPart}буфера +$buf мин ($total мин) билет на $pureLbl впритык — рекомендуем $recLbl ($price)"
+    }
 )
 
 private val UkrainianStrings = AppStrings(
@@ -568,7 +631,37 @@ private val UkrainianStrings = AppStrings(
     ulgowyTicketTitle = "Пільговий квиток (Ulgowy 50%)",
     ulgowyTicketDesc = "Знижка 50% на всі квитки та tPortmonetka (ліміт 9 zł замість 18 zł)",
     tariffNormal = "Normalny",
-    tariffUlgowy = "Ulgowy -50%"
+    tariffUlgowy = "Ulgowy -50%",
+
+    navRoute = "Маршрут",
+    optionsLabel = "Опції",
+    nowLabel = "Зараз",
+    departAtLabel = "Відправлення",
+    arriveByLabel = "Прибуття",
+    planTimeTitle = "Час поїздки",
+    doneLabel = "Готово",
+
+    departureOnSchedule = "Відправлення за розкладом",
+    departureDelayedBy = { "Відправлення затримується на $it хв" },
+    departureEarlyBy = { "Відправлення на $it хв раніше" },
+    approxEveryMinutes = { "Відправлення приблизно кожні $it хв" },
+    alternativesLabel = "Альтернативи:",
+    waitShort = "чекати",
+    waitMinutes = { "Чекати $it хв" },
+    waitOnly = "Чекати",
+    walkAndWait = { w, wt -> "Пройти $w хв і чекати $wt хв" },
+    walkMinutesOnly = { "Пройти $it хв" },
+    transferSameStop = "Пересадка на тій самій зупинці",
+    updatedMinSecAgo = { m, sec -> "Оновлено: $m хв $sec сек тому" },
+    updatedSecAgo = { sec -> "Оновлено: $sec сек тому" },
+    vehicleLateBy = { "Запізнюється на +$it хв" },
+    vehicleEarlyBy = { "Випереджає розклад на $it хв" },
+    vehicleOnSchedule = "Їде за розкладом",
+    ticket24hLabel = "24 год",
+    tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
+        val dPart = if (delay > 0) "запізнення +$delay хв і " else ""
+        "Чистий час $pure хв, але з урахуванням ${dPart}запасу +$buf хв ($total хв) квиток на $pureLbl впритул — рекомендуємо $recLbl ($price)"
+    }
 )
 
 private val PolishStrings = AppStrings(
@@ -740,7 +833,37 @@ private val PolishStrings = AppStrings(
     ulgowyTicketTitle = "Bilet ulgowy (50%)",
     ulgowyTicketDesc = "Zniżka 50% na bilety czasowe i tPortmonetkę (limit 9 zł zamiast 18 zł)",
     tariffNormal = "Normalny",
-    tariffUlgowy = "Ulgowy -50%"
+    tariffUlgowy = "Ulgowy -50%",
+
+    navRoute = "Trasa",
+    optionsLabel = "Opcje",
+    nowLabel = "Teraz",
+    departAtLabel = "Odjazd",
+    arriveByLabel = "Przyjazd",
+    planTimeTitle = "Czas podróży",
+    doneLabel = "Gotowe",
+
+    departureOnSchedule = "Odjazd zgodnie z rozkładem",
+    departureDelayedBy = { "Odjazd opóźniony o $it min" },
+    departureEarlyBy = { "Odjazd $it min wcześniej" },
+    approxEveryMinutes = { "Odjazd mniej więcej co $it min" },
+    alternativesLabel = "Alternatywy:",
+    waitShort = "czekaj",
+    waitMinutes = { "Czekaj $it min" },
+    waitOnly = "Czekaj",
+    walkAndWait = { w, wt -> "Idź $w min i czekaj $wt min" },
+    walkMinutesOnly = { "Idź $it min" },
+    transferSameStop = "Przesiadka na tym samym przystanku",
+    updatedMinSecAgo = { m, sec -> "Zaktualizowano: $m min $sec s temu" },
+    updatedSecAgo = { sec -> "Zaktualizowano: $sec s temu" },
+    vehicleLateBy = { "Opóźnienie +$it min" },
+    vehicleEarlyBy = { "Przyspieszenie $it min" },
+    vehicleOnSchedule = "Jedzie zgodnie z rozkładem",
+    ticket24hLabel = "24 godz.",
+    tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
+        val dPart = if (delay > 0) "opóźnienia +$delay min i " else ""
+        "Czas jazdy $pure min, ale z uwzględnieniem ${dPart}bufora +$buf min ($total min) bilet $pureLbl jest na styk — polecamy $recLbl ($price)"
+    }
 )
 
 private val EnglishStrings = AppStrings(
@@ -912,7 +1035,37 @@ private val EnglishStrings = AppStrings(
     ulgowyTicketTitle = "Reduced ticket (Ulgowy 50%)",
     ulgowyTicketDesc = "50% discount on time tickets & tPortmonetka (cap 9 zł instead of 18 zł)",
     tariffNormal = "Normal",
-    tariffUlgowy = "Ulgowy -50%"
+    tariffUlgowy = "Ulgowy -50%",
+
+    navRoute = "Route",
+    optionsLabel = "Options",
+    nowLabel = "Now",
+    departAtLabel = "Departure",
+    arriveByLabel = "Arrival",
+    planTimeTitle = "Trip time",
+    doneLabel = "Done",
+
+    departureOnSchedule = "Departing on schedule",
+    departureDelayedBy = { "Departure delayed by $it min" },
+    departureEarlyBy = { "Departing $it min early" },
+    approxEveryMinutes = { "Departures roughly every $it min" },
+    alternativesLabel = "Alternatives:",
+    waitShort = "wait",
+    waitMinutes = { "Wait $it min" },
+    waitOnly = "Wait",
+    walkAndWait = { w, wt -> "Walk $w min & wait $wt min" },
+    walkMinutesOnly = { "Walk $it min" },
+    transferSameStop = "Transfer at the same stop",
+    updatedMinSecAgo = { m, sec -> "Updated: $m min $sec s ago" },
+    updatedSecAgo = { sec -> "Updated: $sec s ago" },
+    vehicleLateBy = { "Delayed by +$it min" },
+    vehicleEarlyBy = { "Ahead of schedule by $it min" },
+    vehicleOnSchedule = "Running on schedule",
+    ticket24hLabel = "24 hours",
+    tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
+        val dPart = if (delay > 0) "+$delay min delay and " else ""
+        "Pure ride is $pure min, but with ${dPart}+$buf min buffer ($total min) a $pureLbl ticket is tight — we recommend $recLbl ($price)"
+    }
 )
 
 private val GermanStrings = AppStrings(
@@ -1084,5 +1237,35 @@ private val GermanStrings = AppStrings(
     ulgowyTicketTitle = "Ermäßigtes Ticket (Ulgowy 50%)",
     ulgowyTicketDesc = "50 % Rabatt auf Zeittickets & tPortmonetka (Limit 9 zł statt 18 zł)",
     tariffNormal = "Normal",
-    tariffUlgowy = "Ulgowy -50%"
+    tariffUlgowy = "Ulgowy -50%",
+
+    navRoute = "Route",
+    optionsLabel = "Optionen",
+    nowLabel = "Jetzt",
+    departAtLabel = "Abfahrt",
+    arriveByLabel = "Ankunft",
+    planTimeTitle = "Fahrtzeit",
+    doneLabel = "Fertig",
+
+    departureOnSchedule = "Abfahrt planmäßig",
+    departureDelayedBy = { "Abfahrt $it Min. verspätet" },
+    departureEarlyBy = { "Abfahrt $it Min. früher" },
+    approxEveryMinutes = { "Abfahrt ca. alle $it Min." },
+    alternativesLabel = "Alternativen:",
+    waitShort = "warten",
+    waitMinutes = { "$it Min. warten" },
+    waitOnly = "Warten",
+    walkAndWait = { w, wt -> "$w Min. gehen & $wt Min. warten" },
+    walkMinutesOnly = { "$it Min. gehen" },
+    transferSameStop = "Umstieg an derselben Haltestelle",
+    updatedMinSecAgo = { m, sec -> "Aktualisiert: vor $m Min. $sec Sek." },
+    updatedSecAgo = { sec -> "Aktualisiert: vor $sec Sek." },
+    vehicleLateBy = { "+$it Min. Verspätung" },
+    vehicleEarlyBy = { "$it Min. früher als Plan" },
+    vehicleOnSchedule = "Fährt planmäßig",
+    ticket24hLabel = "24 Std.",
+    tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
+        val dPart = if (delay > 0) "+$delay Min. Verspätung und " else ""
+        "Reine Fahrzeit $pure Min., mit ${dPart}+$buf Min. Puffer ($total Min.) wird ein $pureLbl-Ticket knapp — empfohlen: $recLbl ($price)"
+    }
 )

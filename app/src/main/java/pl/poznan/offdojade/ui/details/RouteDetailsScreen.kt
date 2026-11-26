@@ -5,9 +5,22 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -17,9 +30,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,9 +51,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,20 +70,28 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -74,6 +99,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import org.koin.androidx.compose.koinViewModel
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -94,8 +120,12 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.realtime.LiveVehicle
+import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.TransitJourney
+import pl.poznan.offdojade.domain.model.TransportMode
+import pl.poznan.offdojade.domain.routing.TransitLegInsight
+import pl.poznan.offdojade.ui.components.AnimatedLiveSignal
 import pl.poznan.offdojade.ui.components.TicketRecommendationCard
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
@@ -103,9 +133,72 @@ import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
 import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
 import pl.poznan.offdojade.ui.theme.LiveGreen
+import pl.poznan.offdojade.ui.theme.NightBusOnWhite
 import pl.poznan.offdojade.ui.theme.OfflineGray
 import java.io.File
 import java.time.LocalTime
+import java.time.ZoneId
+
+private data class SelectedVehiclePopup(
+    val label: String,
+    val isTram: Boolean,
+    val delaySeconds: Int,
+    val lastUpdatedEpochMs: Long,
+    val colorHex: String
+)
+
+private sealed interface TimelineDisplayItem {
+    data class WalkOrWait(
+        val walkLeg: JourneyLeg.WalkLeg?,
+        val waitSeconds: Int
+    ) : TimelineDisplayItem
+
+    data class Transit(
+        val leg: JourneyLeg.TransitLeg,
+        val legIndex: Int,
+        val accentColor: Color
+    ) : TimelineDisplayItem
+}
+
+private fun parseHexColor(hex: String): Color =
+    Color(android.graphics.Color.parseColor(hex))
+
+private fun buildTimelineItems(journey: TransitJourney): List<TimelineDisplayItem> {
+    val result = ArrayList<TimelineDisplayItem>(journey.legs.size + 2)
+    var transitIdx = 0
+    for (i in journey.legs.indices) {
+        when (val leg = journey.legs[i]) {
+            is JourneyLeg.WalkLeg -> {
+                val nextTransit = journey.legs.getOrNull(i + 1) as? JourneyLeg.TransitLeg
+                val waitSec = if (nextTransit != null) {
+                    (nextTransit.startTimeSec - leg.endTimeSec).coerceAtLeast(0)
+                } else {
+                    0
+                }
+                result.add(TimelineDisplayItem.WalkOrWait(walkLeg = leg, waitSeconds = waitSec))
+            }
+
+            is JourneyLeg.TransitLeg -> {
+                val prevTransit = journey.legs.getOrNull(i - 1) as? JourneyLeg.TransitLeg
+                if (prevTransit != null) {
+                    // Пересадка на той же остановке — идти никуда не нужно, просто ждать
+                    val waitSec = (leg.startTimeSec - prevTransit.endTimeSec).coerceAtLeast(0)
+                    result.add(TimelineDisplayItem.WalkOrWait(walkLeg = null, waitSeconds = waitSec))
+                }
+                val color = parseHexColor(
+                    RouteLegColors.hexForLeg(
+                        transitLegIndex = transitIdx,
+                        shortName = leg.routeShortName,
+                        isTram = leg.isTram
+                    )
+                )
+                result.add(TimelineDisplayItem.Transit(leg = leg, legIndex = transitIdx, accentColor = color))
+                transitIdx++
+            }
+        }
+    }
+    return result
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -115,12 +208,25 @@ fun RouteDetailsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val liveVehicles by viewModel.liveVehicles.collectAsStateWithLifecycle()
+    val realtimeStatus by viewModel.realtimeStatus.collectAsStateWithLifecycle()
     val journey = state.journey
     val s = LocalStrings.current
-    val nowSec = remember { LocalTime.now().toSecondOfDay() }
+    var nowSec by remember {
+        mutableIntStateOf(LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay())
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000L)
+            nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+        }
+    }
 
-    // Панель таймлайна справа: true = раскрыта (~90%), false = свёрнута (~23%, открыта карта)
+    // Панель таймлайна справа: true = раскрыта (~90%), false = свёрнута (~88dp, открыта карта)
     var isPanelExpanded by remember { mutableStateOf(true) }
+    var selectedVehicle by remember { mutableStateOf<SelectedVehiclePopup?>(null) }
+
+    val fallbackFeedUpdatedMs = (realtimeStatus as? RealtimeStatus.Live)?.lastUpdatedEpochMs
+        ?: System.currentTimeMillis()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -156,7 +262,6 @@ fun RouteDetailsScreen(
                     }
                 )
 
-                // Верхняя сводка маршрута (как на скриншотах Jakdojade)
                 if (journey != null) {
                     JourneyHeaderSummary(
                         journey = journey,
@@ -179,6 +284,8 @@ fun RouteDetailsScreen(
             return@Scaffold
         }
 
+        val timelineItems = remember(journey) { buildTimelineItems(journey) }
+
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -199,6 +306,9 @@ fun RouteDetailsScreen(
                 outsidePolylines = state.outsidePolylines,
                 walkPolylines = state.walkPolylines,
                 liveVehicles = liveVehicles,
+                fallbackFeedUpdatedMs = fallbackFeedUpdatedMs,
+                getTripDelaySec = viewModel::getTripDelaySeconds,
+                onVehicleClicked = { popup -> selectedVehicle = popup },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -226,9 +336,27 @@ fun RouteDetailsScreen(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
+
+                // Всплывающая карточка при нажатии на кружок автобуса/трамвая на карте
+                AnimatedVisibility(
+                    visible = selectedVehicle != null,
+                    enter = slideInVertically(tween(220, easing = FastOutSlowInEasing)) { it / 2 } + fadeIn(tween(200)),
+                    exit = slideOutVertically(tween(180, easing = FastOutSlowInEasing)) { it / 2 } + fadeOut(tween(160)),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = 14.dp, end = 100.dp)
+                ) {
+                    val popup = selectedVehicle
+                    if (popup != null) {
+                        VehicleInfoPopupCard(
+                            popup = popup,
+                            onDismiss = { selectedVehicle = null }
+                        )
+                    }
+                }
             }
 
-            // 2. Выдвижная правая панель таймлайна (раскрывается/сворачивается свайпом или тапом)
+            // 2. Выдвижная правая панель таймлайна
             Surface(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -254,14 +382,119 @@ fun RouteDetailsScreen(
                 shadowElevation = 10.dp,
                 border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                if (isPanelExpanded) {
-                    ExpandedTimelinePanel(journey = journey)
-                } else {
-                    CollapsedTimelineRail(
-                        journey = journey,
-                        onExpand = { isPanelExpanded = true }
-                    )
+                AnimatedContent(
+                    targetState = isPanelExpanded,
+                    transitionSpec = {
+                        fadeIn(tween(200, easing = FastOutSlowInEasing)) togetherWith
+                            fadeOut(tween(150, easing = FastOutSlowInEasing))
+                    },
+                    label = "timelinePanelContent"
+                ) { expanded ->
+                    if (expanded) {
+                        ExpandedTimelinePanel(
+                            journey = journey,
+                            items = timelineItems,
+                            legInsights = state.legInsights
+                        )
+                    } else {
+                        CollapsedTimelineRail(
+                            items = timelineItems,
+                            onExpand = { isPanelExpanded = true }
+                        )
+                    }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VehicleInfoPopupCard(
+    popup: SelectedVehiclePopup,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Живой таймер "сколько минут и секунд назад" обновляется каждую секунду
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(popup) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+
+    val s = LocalStrings.current
+    val ageSec = ((nowMs - popup.lastUpdatedEpochMs) / 1000L).coerceAtLeast(0L)
+    val ageMins = ageSec / 60L
+    val remSec = ageSec % 60L
+    val updatedAgoText = if (ageMins > 0L) {
+        s.updatedMinSecAgo(ageMins, remSec)
+    } else {
+        s.updatedSecAgo(remSec)
+    }
+
+    val delayMin = popup.delaySeconds / 60
+    val (scheduleStatusText, statusColor) = when {
+        delayMin >= 1 -> s.vehicleLateBy(delayMin) to DelayRed
+        delayMin <= -1 -> s.vehicleEarlyBy(-delayMin) to ArrivalPillBlue
+        else -> s.vehicleOnSchedule to LiveGreen
+    }
+
+    val accent = parseHexColor(popup.colorHex)
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.7f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(accent),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (popup.isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
+                    contentDescription = null,
+                    tint = if (accent.luminance() > 0.6f) NightBusOnWhite else Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${if (popup.isTram) s.modeTram else s.modeBus} ${popup.label}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = scheduleStatusText,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = statusColor
+                )
+                Text(
+                    text = updatedAgoText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = s.close,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }
@@ -274,10 +507,12 @@ private fun JourneyHeaderSummary(
     referenceNowSec: Int
 ) {
     val s = LocalStrings.current
-    val isDeparted = journey.departureTimeSec < referenceNowSec
-    val deltaSec = journey.departureTimeSec - referenceNowSec
+    val busDepSec = journey.transitDepartureTimeSec
+    val isDeparted = busDepSec < referenceNowSec
+    val deltaSec = busDepSec - referenceNowSec
     val deltaMins = if (isDeparted) ((-deltaSec) + 30) / 60 else deltaSec / 60
     val isOverHour = deltaMins > 60
+    val isDelayed = journey.transitLegs.any { it.delaySeconds >= 60 }
     val hasRealtime = journey.transitLegs.any { it.delaySeconds != 0 }
 
     Row(
@@ -287,7 +522,6 @@ private fun JourneyHeaderSummary(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Левая колонка: Отправляется <1 мин
         Column(modifier = Modifier.width(96.dp)) {
             Text(
                 text = if (isDeparted) s.departedLabel else if (isOverHour) s.onSchedule else s.departingCaption,
@@ -302,7 +536,7 @@ private fun JourneyHeaderSummary(
             ) {
                 if (isOverHour) {
                     Text(
-                        text = TimeFormatUtils.formatClock(journey.departureTimeSec),
+                        text = TimeFormatUtils.formatClock(busDepSec),
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -327,19 +561,14 @@ private fun JourneyHeaderSummary(
                     )
                 }
                 if (!isDeparted && hasRealtime) {
-                    Icon(
-                        imageVector = Icons.Default.Sensors,
-                        contentDescription = null,
-                        tint = DelayRed,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .padding(bottom = 3.dp)
+                    AnimatedLiveSignal(
+                        isDelayed = isDelayed,
+                        modifier = Modifier.padding(bottom = 2.dp)
                     )
                 }
             }
         }
 
-        // Центр: линии + зелёная/синяя капсулы времени
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -348,7 +577,15 @@ private fun JourneyHeaderSummary(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                journey.transitLegs.forEach { leg ->
+                journey.transitLegs.forEachIndexed { idx, leg ->
+                    val legColor = parseHexColor(
+                        RouteLegColors.hexForLeg(
+                            transitLegIndex = idx,
+                            shortName = leg.routeShortName,
+                            isTram = leg.isTram
+                        )
+                    )
+                    val isLightAccent = legColor.luminance() > 0.6f
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -356,17 +593,19 @@ private fun JourneyHeaderSummary(
                         Icon(
                             imageVector = if (leg.isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
                             contentDescription = null,
+                            tint = legColor,
                             modifier = Modifier.size(18.dp)
                         )
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = Color.Transparent,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            color = if (isLightAccent) legColor else legColor.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, legColor)
                         ) {
                             Text(
                                 text = leg.routeShortName,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
+                                color = if (isLightAccent) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
@@ -377,7 +616,7 @@ private fun JourneyHeaderSummary(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                SmallTimePill(TimeFormatUtils.formatClock(journey.departureTimeSec), DeparturePillGreen)
+                SmallTimePill(TimeFormatUtils.formatClock(busDepSec), DeparturePillGreen)
                 Text(
                     text = "${journey.totalDurationMinutes} ${s.minShort}",
                     style = MaterialTheme.typography.labelSmall,
@@ -396,27 +635,66 @@ private fun JourneyHeaderSummary(
 }
 
 @Composable
-private fun ExpandedTimelinePanel(journey: TransitJourney) {
+private fun VerticalDottedLine(
+    color: Color,
+    height: Dp? = null,
+    modifier: Modifier = Modifier
+) {
+    val sizedModifier = if (height != null) {
+        modifier.width(6.dp).height(height)
+    } else {
+        modifier.width(6.dp)
+    }
+    ComposeCanvas(modifier = sizedModifier) {
+        val dotRadius = 1.6.dp.toPx()
+        val step = 5.5.dp.toPx()
+        val cx = size.width / 2f
+        var y = dotRadius + 1.5.dp.toPx()
+        while (y <= size.height - dotRadius - 1.5.dp.toPx()) {
+            drawCircle(
+                color = color,
+                radius = dotRadius,
+                center = Offset(cx, y)
+            )
+            y += step
+        }
+    }
+}
+
+@Composable
+private fun ExpandedTimelinePanel(
+    journey: TransitJourney,
+    items: List<TimelineDisplayItem>,
+    legInsights: Map<String, TransitLegInsight>
+) {
     val expandedLegs = remember { mutableStateMapOf<Int, Boolean>() }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        itemsIndexed(journey.legs) { index, leg ->
-            when (leg) {
-                is JourneyLeg.WalkLeg -> JakdojadeWalkLegRow(leg)
-                is JourneyLeg.TransitLeg -> JakdojadeTransitLegBlock(
-                    leg = leg,
+        itemsIndexed(items) { index, item ->
+            val nextWalk = items.getOrNull(index + 1) as? TimelineDisplayItem.WalkOrWait
+            when (item) {
+                is TimelineDisplayItem.WalkOrWait -> JakdojadeWalkOrWaitRow(
+                    item = item,
+                    hasPrev = index > 0,
+                    hasNext = index < items.lastIndex
+                )
+                is TimelineDisplayItem.Transit -> JakdojadeTransitLegBlock(
+                    leg = item.leg,
+                    accent = item.accentColor,
+                    insight = legInsights[item.leg.tripId],
                     expanded = expandedLegs[index] == true,
-                    onToggleExpand = { expandedLegs[index] = !(expandedLegs[index] == true) }
+                    onToggleExpand = { expandedLegs[index] = !(expandedLegs[index] == true) },
+                    nextWalkOrWait = nextWalk
                 )
             }
         }
 
         item(key = "ticket_card") {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(14.dp))
             TicketRecommendationCard(ticket = journey.ticketRecommendation)
         }
     }
@@ -424,47 +702,64 @@ private fun ExpandedTimelinePanel(journey: TransitJourney) {
 
 @Composable
 private fun CollapsedTimelineRail(
-    journey: TransitJourney,
+    items: List<TimelineDisplayItem>,
     onExpand: () -> Unit
 ) {
+    val s = LocalStrings.current
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .clickable(onClick = onExpand),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        itemsIndexed(journey.legs) { _, leg ->
-            when (leg) {
-                is JourneyLeg.WalkLeg -> {
+        itemsIndexed(items) { index, item ->
+            when (item) {
+                is TimelineDisplayItem.WalkOrWait -> {
+                    val needsWalk = item.walkLeg != null && item.walkLeg.distanceMeters > 15
+                    val waitMins = (item.waitSeconds + 30) / 60
+                    val dotColor = if (needsWalk) {
+                        ArrivalPillBlue.copy(alpha = 0.65f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    }
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
+                        if (index > 0) {
+                            VerticalDottedLine(color = dotColor, height = 14.dp)
+                        }
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.DirectionsWalk,
+                            imageVector = if (needsWalk) Icons.AutoMirrored.Filled.DirectionsWalk else Icons.Default.Schedule,
                             contentDescription = null,
-                            tint = ArrivalPillBlue,
+                            tint = if (needsWalk) ArrivalPillBlue else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
-                        Box(
-                            modifier = Modifier
-                                .width(2.dp)
-                                .height(28.dp)
-                                .background(ArrivalPillBlue.copy(alpha = 0.55f))
-                        )
+                        if (!needsWalk) {
+                            Text(
+                                text = if (waitMins > 0) "${s.waitShort} $waitMins${s.minShort}" else s.waitShort,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                        if (index < items.lastIndex) {
+                            VerticalDottedLine(color = dotColor, height = 14.dp)
+                        }
                     }
                 }
 
-                is JourneyLeg.TransitLeg -> {
-                    val accent = if (leg.isTram) DeparturePillGreen else ArrivalPillBlue
+                is TimelineDisplayItem.Transit -> {
+                    val leg = item.leg
+                    val accent = item.accentColor
                     val hasDelay = leg.delaySeconds >= 60
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Время посадки
                         SmallTimePill(
                             text = TimeFormatUtils.formatClock(leg.boardingStop.scheduledTimeSec),
                             bgColor = DeparturePillGreen,
@@ -479,7 +774,6 @@ private fun CollapsedTimelineRail(
                             )
                         }
 
-                        // Круглый значок транспорта + вертикальная линия
                         Box(
                             modifier = Modifier
                                 .size(34.dp)
@@ -490,7 +784,7 @@ private fun CollapsedTimelineRail(
                             Icon(
                                 imageVector = if (leg.isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
                                 contentDescription = null,
-                                tint = Color.White,
+                                tint = if (accent.luminance() > 0.6f) NightBusOnWhite else Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -501,7 +795,6 @@ private fun CollapsedTimelineRail(
                                 .background(accent)
                         )
 
-                        // Время высадки
                         SmallTimePill(
                             text = TimeFormatUtils.formatClock(leg.alightingStop.scheduledTimeSec),
                             bgColor = ArrivalPillBlue,
@@ -523,42 +816,88 @@ private fun CollapsedTimelineRail(
 }
 
 @Composable
-private fun JakdojadeWalkLegRow(leg: JourneyLeg.WalkLeg) {
+private fun JakdojadeWalkOrWaitRow(
+    item: TimelineDisplayItem.WalkOrWait,
+    hasPrev: Boolean,
+    hasNext: Boolean
+) {
     val s = LocalStrings.current
+    val walkLeg = item.walkLeg
+    val needsWalk = walkLeg != null && walkLeg.distanceMeters > 15
+    val walkMins = if (needsWalk) ((walkLeg!!.durationSec + 30) / 60).coerceAtLeast(1) else 0
+    val waitMins = (item.waitSeconds + 30) / 60
+
+    val titleText = when {
+        !needsWalk && waitMins > 0 -> s.waitMinutes(waitMins)
+        !needsWalk -> s.waitOnly
+        waitMins > 0 -> s.walkAndWait(walkMins, waitMins)
+        else -> s.walkMinutesOnly(walkMins)
+    }
+
+    val subtitleText = if (needsWalk && walkLeg != null) {
+        "${walkLeg.distanceMeters} ${s.metersShort} • ${s.walkTo(walkLeg.toName)}"
+    } else {
+        s.transferSameStop
+    }
+
+    val dotColor = if (needsWalk) {
+        ArrivalPillBlue.copy(alpha = 0.65f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+    }
+
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(
+        Column(
             modifier = Modifier.width(74.dp),
-            contentAlignment = Alignment.Center
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
+            if (hasPrev) {
+                VerticalDottedLine(
+                    color = dotColor,
+                    height = 14.dp
+                )
+            }
             Box(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(CircleShape)
-                    .background(ArrivalPillBlue.copy(alpha = 0.16f)),
+                    .background(
+                        if (needsWalk) ArrivalPillBlue.copy(alpha = 0.16f)
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.DirectionsWalk,
+                    imageVector = if (needsWalk) Icons.AutoMirrored.Filled.DirectionsWalk else Icons.Default.Schedule,
                     contentDescription = null,
-                    tint = ArrivalPillBlue,
+                    tint = if (needsWalk) ArrivalPillBlue else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(19.dp)
                 )
             }
+            if (hasNext) {
+                VerticalDottedLine(
+                    color = dotColor,
+                    height = 14.dp
+                )
+            }
         }
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 8.dp)
+        ) {
             Text(
-                text = s.walkTo(leg.toName),
+                text = titleText,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "${leg.distanceMeters} ${s.metersShort} • ~${(leg.durationSec + 30) / 60} ${s.minShort}",
+                text = subtitleText,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -566,28 +905,49 @@ private fun JakdojadeWalkLegRow(leg: JourneyLeg.WalkLeg) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun JakdojadeTransitLegBlock(
     leg: JourneyLeg.TransitLeg,
+    accent: Color,
+    insight: TransitLegInsight?,
     expanded: Boolean,
-    onToggleExpand: () -> Unit
+    onToggleExpand: () -> Unit,
+    nextWalkOrWait: TimelineDisplayItem.WalkOrWait? = null
 ) {
     val s = LocalStrings.current
-    val accent = if (leg.isTram) DeparturePillGreen else ArrivalPillBlue
-    val hasDelay = leg.delaySeconds >= 60
-    val delayText = TimeFormatUtils.formatDelayBadge(leg.delaySeconds, s)
+    val delayMins = leg.delaySeconds / 60
+    val hasDelay = delayMins >= 1
+    val (depStatusText, depStatusColor) = when {
+        delayMins >= 1 -> s.departureDelayedBy(delayMins) to DelayRed
+        delayMins <= -1 -> s.departureEarlyBy(-delayMins) to ArrivalPillBlue
+        else -> s.departureOnSchedule to LiveGreen
+    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // 1. Остановка посадки
+    val isLightAccent = accent.luminance() > 0.6f
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        label = "stopsChevronRotation"
+    )
+
+    Column(
+        modifier = Modifier.animateContentSize(animationSpec = tween(420, easing = FastOutSlowInEasing)),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        // 1. Остановка посадки (непрерывная линия цвета сегмента уходит вниз без разрыва)
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(
-                modifier = Modifier.width(74.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                modifier = Modifier
+                    .width(74.dp)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 SmallTimePill(
                     text = TimeFormatUtils.formatClock(leg.boardingStop.scheduledTimeSec),
@@ -595,6 +955,7 @@ private fun JakdojadeTransitLegBlock(
                     strikethrough = hasDelay
                 )
                 if (hasDelay) {
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = TimeFormatUtils.formatClock(leg.boardingStop.effectiveTimeSec),
                         style = MaterialTheme.typography.labelMedium,
@@ -602,31 +963,44 @@ private fun JakdojadeTransitLegBlock(
                         color = DelayRed
                     )
                 }
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 8.dp)
+                        .background(accent)
+                )
             }
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(bottom = 8.dp)
+            ) {
                 Text(
                     text = leg.boardingStop.stopName,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                if (delayText != null) {
-                    Text(
-                        text = delayText,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (leg.delaySeconds > 0) DelayRed else LiveGreen
-                    )
-                }
+                Text(
+                    text = depStatusText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = depStatusColor
+                )
             }
         }
 
-        // 2. Средняя часть: вертикальная линия транспорта + номер линии + направление + промежуточные остановки
+        // 2. Средняя часть: значок + сплошная линия на всю высоту до остановки высадки
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(
-                modifier = Modifier.width(74.dp),
+                modifier = Modifier
+                    .width(74.dp)
+                    .fillMaxHeight(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
@@ -639,20 +1013,23 @@ private fun JakdojadeTransitLegBlock(
                     Icon(
                         imageVector = if (leg.isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
                         contentDescription = null,
-                        tint = Color.White,
+                        tint = if (isLightAccent) NightBusOnWhite else Color.White,
                         modifier = Modifier.size(20.dp)
                     )
                 }
                 Box(
                     modifier = Modifier
                         .width(3.dp)
-                        .height(if (expanded) (leg.stops.size * 26).coerceAtLeast(56).dp else 64.dp)
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 40.dp)
                         .background(accent)
                 )
             }
 
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
@@ -667,13 +1044,14 @@ private fun JakdojadeTransitLegBlock(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(7.dp),
-                            color = Color.Transparent,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            color = if (isLightAccent) accent else accent.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, accent)
                         ) {
                             Text(
                                 text = leg.routeShortName,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
+                                color = if (isLightAccent) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp)
                             )
                         }
@@ -689,6 +1067,41 @@ private fun JakdojadeTransitLegBlock(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+
+                // Примерная частота отправлений и альтернативные линии (как на скриншоте Jakdojade)
+                if (insight?.approxHeadwayMinutes != null) {
+                    Text(
+                        text = s.approxEveryMinutes(insight.approxHeadwayMinutes),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (insight != null && insight.alternativeLines.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = s.alternativesLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.CenterVertically)
+                        )
+                        insight.alternativeLines.forEach { alt ->
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Text(
+                                    text = alt,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -708,31 +1121,39 @@ private fun JakdojadeTransitLegBlock(
                     )
                     if (leg.stops.size > 2) {
                         Icon(
-                            imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            imageVector = Icons.Default.ExpandMore,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier
+                                .size(18.dp)
+                                .rotate(chevronRotation)
                         )
                     }
                 }
 
-                if (expanded && leg.stops.size > 2) {
-                    leg.stops.subList(1, leg.stops.lastIndex).forEach { midStop ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = TimeFormatUtils.formatClock(midStop.effectiveTimeSec),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = midStop.stopName,
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                AnimatedVisibility(
+                    visible = expanded && leg.stops.size > 2,
+                    enter = expandVertically(tween(420, easing = FastOutSlowInEasing)) + fadeIn(tween(380)),
+                    exit = shrinkVertically(tween(360, easing = FastOutSlowInEasing)) + fadeOut(tween(280))
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        leg.stops.subList(1, leg.stops.lastIndex).forEach { midStop ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = TimeFormatUtils.formatClock(midStop.effectiveTimeSec),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = midStop.stopName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -741,16 +1162,19 @@ private fun JakdojadeTransitLegBlock(
             }
         }
 
-        // 3. Остановка высадки
+        // 3. Остановка высадки (пунктир к пересадке начинается сразу под капсулой времени без зазора)
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(
-                modifier = Modifier.width(74.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                modifier = Modifier
+                    .width(74.dp)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 SmallTimePill(
                     text = TimeFormatUtils.formatClock(leg.alightingStop.scheduledTimeSec),
@@ -758,6 +1182,7 @@ private fun JakdojadeTransitLegBlock(
                     strikethrough = hasDelay
                 )
                 if (hasDelay) {
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = TimeFormatUtils.formatClock(leg.alightingStop.effectiveTimeSec),
                         style = MaterialTheme.typography.labelMedium,
@@ -765,8 +1190,26 @@ private fun JakdojadeTransitLegBlock(
                         color = DelayRed
                     )
                 }
+                if (nextWalkOrWait != null) {
+                    val nextNeedsWalk = nextWalkOrWait.walkLeg != null && nextWalkOrWait.walkLeg.distanceMeters > 15
+                    val nextDotColor = if (nextNeedsWalk) {
+                        ArrivalPillBlue.copy(alpha = 0.65f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    }
+                    VerticalDottedLine(
+                        color = nextDotColor,
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 6.dp)
+                    )
+                }
             }
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(bottom = if (nextWalkOrWait != null) 4.dp else 0.dp)
+            ) {
                 Text(
                     text = leg.alightingStop.stopName,
                     style = MaterialTheme.typography.titleMedium,
@@ -817,10 +1260,14 @@ private fun OfflineRouteMapView(
     outsidePolylines: List<RouteShapePolyline>,
     walkPolylines: List<List<Pair<Double, Double>>>,
     liveVehicles: List<LiveVehicle>,
+    fallbackFeedUpdatedMs: Long,
+    getTripDelaySec: (String?) -> Int?,
+    onVehicleClicked: (SelectedVehiclePopup?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val latestOnVehicleClicked by rememberUpdatedState(onVehicleClicked)
 
     val mapView = remember {
         MapView(context).apply { onCreate(null) }
@@ -848,6 +1295,8 @@ private fun OfflineRouteMapView(
     val styleJson = remember(localMapFile?.absolutePath) {
         buildOfflineMapStyleJson(localMapFile)
     }
+    var appliedStyleJson by remember { mutableStateOf<String?>(null) }
+    var clickListenerAttached by remember { mutableStateOf(false) }
 
     val relevantTripIds = remember(journey) {
         journey.transitLegs.map { it.tripId }.toSet()
@@ -858,8 +1307,38 @@ private fun OfflineRouteMapView(
         modifier = modifier,
         update = { mv ->
             mv.getMapAsync { map ->
+                if (!clickListenerAttached) {
+                    clickListenerAttached = true
+                    map.addOnMapClickListener { latLng ->
+                        val screenPt = map.projection.toScreenLocation(latLng)
+                        val hit = map.queryRenderedFeatures(screenPt, LAYER_LIVE_VEHICLES).firstOrNull()
+                        if (hit != null) {
+                            val label = hit.getStringProperty("label") ?: "ZTM"
+                            val isTram = hit.getBooleanProperty("isTram") ?: false
+                            val delaySec = hit.getNumberProperty("delaySec")?.toInt() ?: 0
+                            val updatedMs = hit.getNumberProperty("updatedMs")?.toLong()
+                                ?: System.currentTimeMillis()
+                            val colorHex = hit.getStringProperty("colorHex") ?: "#2563EB"
+                            latestOnVehicleClicked(
+                                SelectedVehiclePopup(
+                                    label = label,
+                                    isTram = isTram,
+                                    delaySeconds = delaySec,
+                                    lastUpdatedEpochMs = updatedMs,
+                                    colorHex = colorHex
+                                )
+                            )
+                            true
+                        } else {
+                            latestOnVehicleClicked(null)
+                            false
+                        }
+                    }
+                }
+
                 val currentStyle = map.style
-                if (currentStyle == null || !currentStyle.isFullyLoaded) {
+                if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
+                    appliedStyleJson = styleJson
                     map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
                         renderRouteOverlay(
                             style = loadedStyle,
@@ -868,7 +1347,9 @@ private fun OfflineRouteMapView(
                             outsidePolylines = outsidePolylines,
                             walkPolylines = walkPolylines,
                             liveVehicles = liveVehicles,
-                            relevantTripIds = relevantTripIds
+                            relevantTripIds = relevantTripIds,
+                            fallbackFeedUpdatedMs = fallbackFeedUpdatedMs,
+                            getTripDelaySec = getTripDelaySec
                         )
                         fitCameraToJourney(map, journey, polylines, walkPolylines)
                     }
@@ -880,7 +1361,9 @@ private fun OfflineRouteMapView(
                         outsidePolylines = outsidePolylines,
                         walkPolylines = walkPolylines,
                         liveVehicles = liveVehicles,
-                        relevantTripIds = relevantTripIds
+                        relevantTripIds = relevantTripIds,
+                        fallbackFeedUpdatedMs = fallbackFeedUpdatedMs,
+                        getTripDelaySec = getTripDelaySec
                     )
                 }
             }
@@ -895,13 +1378,17 @@ private fun renderRouteOverlay(
     outsidePolylines: List<RouteShapePolyline>,
     walkPolylines: List<List<Pair<Double, Double>>>,
     liveVehicles: List<LiveVehicle>,
-    relevantTripIds: Set<String>
+    relevantTripIds: Set<String>,
+    fallbackFeedUpdatedMs: Long,
+    getTripDelaySec: (String?) -> Int?
 ) {
-    // 1. Полупрозрачная трасса транспорта вне нужного маршрута (максимум до ближайшей остановки)
+    // 1. Полупрозрачная трасса транспорта вне нужного маршрута — цветом соответствующего сегмента
     val outsideFeatures = outsidePolylines.mapNotNull { poly ->
         if (poly.coordinates.size < 2) return@mapNotNull null
         val points = poly.coordinates.map { (lat, lon) -> Point.fromLngLat(lon, lat) }
-        Feature.fromGeometry(LineString.fromLngLats(points))
+        Feature.fromGeometry(LineString.fromLngLats(points)).apply {
+            addStringProperty("color", poly.colorHex)
+        }
     }
     val outsideCollection = FeatureCollection.fromFeatures(outsideFeatures)
     val existingOutsideSource = style.getSourceAs<GeoJsonSource>(SOURCE_ROUTE_OUTSIDE)
@@ -911,7 +1398,7 @@ private fun renderRouteOverlay(
         style.addSource(GeoJsonSource(SOURCE_ROUTE_OUTSIDE, outsideCollection))
         style.addLayer(
             LineLayer(LAYER_ROUTE_OUTSIDE, SOURCE_ROUTE_OUTSIDE).withProperties(
-                PropertyFactory.lineColor("#16A34A"),
+                PropertyFactory.lineColor(Expression.get("color")),
                 PropertyFactory.lineOpacity(0.32f),
                 PropertyFactory.lineWidth(3.5f),
                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
@@ -920,11 +1407,13 @@ private fun renderRouteOverlay(
         )
     }
 
-    // 2. Активные полилинии маршрута (от посадки до высадки — 100% непрозрачность)
+    // 2. Активные полилинии маршрута (1-й зелёный, 2-й синий, 3-й оранжевый и т.д.)
     val lineFeatures = polylines.mapNotNull { poly ->
         if (poly.coordinates.size < 2) return@mapNotNull null
         val points = poly.coordinates.map { (lat, lon) -> Point.fromLngLat(lon, lat) }
-        Feature.fromGeometry(LineString.fromLngLats(points))
+        Feature.fromGeometry(LineString.fromLngLats(points)).apply {
+            addStringProperty("color", poly.colorHex)
+        }
     }
     val routeCollection = FeatureCollection.fromFeatures(lineFeatures)
     val existingRouteSource = style.getSourceAs<GeoJsonSource>(SOURCE_ROUTE_LINES)
@@ -934,7 +1423,7 @@ private fun renderRouteOverlay(
         style.addSource(GeoJsonSource(SOURCE_ROUTE_LINES, routeCollection))
         style.addLayer(
             LineLayer(LAYER_ROUTE_LINES, SOURCE_ROUTE_LINES).withProperties(
-                PropertyFactory.lineColor("#16A34A"),
+                PropertyFactory.lineColor(Expression.get("color")),
                 PropertyFactory.lineOpacity(1.0f),
                 PropertyFactory.lineWidth(5.5f),
                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
@@ -943,7 +1432,7 @@ private fun renderRouteOverlay(
         )
     }
 
-    // 3. Пеший путь до остановки / пересадки / адреса — пунктирной линией
+    // 3. Пеший путь до остановки / пересадки — пунктирной линией
     val walkFeatures = walkPolylines.mapNotNull { seg ->
         if (seg.size < 2) return@mapNotNull null
         val points = seg.map { (lat, lon) -> Point.fromLngLat(lon, lat) }
@@ -957,7 +1446,7 @@ private fun renderRouteOverlay(
         style.addSource(GeoJsonSource(SOURCE_WALK_LINES, walkCollection))
         style.addLayer(
             LineLayer(LAYER_WALK_LINES, SOURCE_WALK_LINES).withProperties(
-                PropertyFactory.lineColor("#0EA5E9"),
+                PropertyFactory.lineColor("#38BDF8"),
                 PropertyFactory.lineWidth(4.0f),
                 PropertyFactory.lineDasharray(arrayOf(1.5f, 2.0f)),
                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
@@ -966,10 +1455,17 @@ private fun renderRouteOverlay(
         )
     }
 
-    // 4. Точки остановок маршрута
-    val stopFeatures = journey.transitLegs.flatMap { leg ->
+    // 4. Точки остановок маршрута (обводка цветом сегмента)
+    val stopFeatures = journey.transitLegs.flatMapIndexed { legIdx, leg ->
+        val colorHex = RouteLegColors.hexForLeg(
+            transitLegIndex = legIdx,
+            shortName = leg.routeShortName,
+            isTram = leg.isTram
+        )
         leg.stops.map { stop ->
-            Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude))
+            Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
+                addStringProperty("color", colorHex)
+            }
         }
     }
     val stopCollection = FeatureCollection.fromFeatures(stopFeatures)
@@ -982,27 +1478,54 @@ private fun renderRouteOverlay(
             CircleLayer(LAYER_ROUTE_STOPS, SOURCE_ROUTE_STOPS).withProperties(
                 PropertyFactory.circleRadius(5.5f),
                 PropertyFactory.circleColor("#FFFFFF"),
-                PropertyFactory.circleStrokeColor("#16A34A"),
-                PropertyFactory.circleStrokeWidth(2.5f)
+                PropertyFactory.circleStrokeColor(Expression.get("color")),
+                PropertyFactory.circleStrokeWidth(2.8f)
             )
         )
     }
 
-    // 5. Живые маркеры транспорта со значком трамвая/автобуса и номером линии
+    // 5. Живые маркеры транспорта — показываем ТОЛЬКО транспорт, едущий по текущей трассе
+    val legIndexByTripId = journey.transitLegs.withIndex().associate { (idx, leg) -> leg.tripId to idx }
     val legByTripId = journey.transitLegs.associateBy { it.tripId }
     val matchingVehicles = liveVehicles.filter { it.tripId in relevantTripIds }
-        .ifEmpty { liveVehicles.take(25) }
 
     val vehicleFeatures = matchingVehicles.map { v ->
         val leg = legByTripId[v.tripId]
+        val legIdx = legIndexByTripId[v.tripId]
         val label = leg?.routeShortName ?: v.routeId?.take(4)?.ifBlank { "ZTM" } ?: "ZTM"
         val isTram = leg?.isTram ?: (label.toIntOrNull()?.let { it in 0..99 || it in 201..202 } ?: false)
-        val iconId = "veh_${if (isTram) "tram" else "bus"}_$label"
+        val colorHex = if (legIdx != null && leg != null) {
+            RouteLegColors.hexForLeg(
+                transitLegIndex = legIdx,
+                shortName = leg.routeShortName,
+                isTram = leg.isTram
+            )
+        } else if (!isTram && TransportMode.isNightLine(label)) {
+            RouteLegColors.NIGHT_BUS_HEX
+        } else {
+            if (isTram) "#3FA372" else "#4B83C3"
+        }
+        val delaySec = getTripDelaySec(v.tripId) ?: leg?.delaySeconds ?: 0
+        val updatedMs = v.timestampEpochSec?.takeIf { it > 0L }?.let { it * 1000L } ?: fallbackFeedUpdatedMs
+
+        val iconId = "veh_circle_${if (isTram) "t" else "b"}_${colorHex.removePrefix("#")}_$label"
         if (style.getImage(iconId) == null) {
-            style.addImage(iconId, createVehicleBadgeBitmap(label = label, isTram = isTram))
+            style.addImage(
+                iconId,
+                createVehicleCircleBitmap(
+                    label = label,
+                    isTram = isTram,
+                    colorHex = colorHex
+                )
+            )
         }
         Feature.fromGeometry(Point.fromLngLat(v.longitude, v.latitude)).apply {
             addStringProperty("icon", iconId)
+            addStringProperty("label", label)
+            addBooleanProperty("isTram", isTram)
+            addNumberProperty("delaySec", delaySec)
+            addNumberProperty("updatedMs", updatedMs)
+            addStringProperty("colorHex", colorHex)
         }
     }
     val vehicleCollection = FeatureCollection.fromFeatures(vehicleFeatures)
@@ -1022,66 +1545,75 @@ private fun renderRouteOverlay(
 }
 
 /**
- * Генерирует чёткий бейдж транспорта (значок трамвая/автобуса + номер линии) для отображения на карте.
+ * Генерирует круглый маркер транспорта со значком трамвая/автобуса и номером линии внутри кружка.
  */
-private fun createVehicleBadgeBitmap(label: String, isTram: Boolean): Bitmap {
-    val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
-        textSize = 34f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-    }
-    val textWidth = textPaint.measureText(label)
-    val iconArea = 42f
-    val padX = 18f
-    val width = (padX + iconArea + textWidth + padX).toInt().coerceAtLeast(112)
-    val height = 62
+private fun createVehicleCircleBitmap(
+    label: String,
+    isTram: Boolean,
+    colorHex: String
+): Bitmap {
+    val size = 86
+    val cx = size / 2f
+    val cy = size / 2f
+    val radius = size / 2f - 5f
 
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
 
-    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = if (isTram) android.graphics.Color.parseColor("#16A34A") else android.graphics.Color.parseColor("#0EA5E9")
-    }
-    val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 4f
-    }
-    val rect = RectF(3f, 3f, width - 3f, height - 3f)
-    canvas.drawRoundRect(rect, 14f, 14f, bgPaint)
-    canvas.drawRoundRect(rect, 14f, 14f, borderPaint)
+    val parsedBg = android.graphics.Color.parseColor(colorHex)
+    val r = android.graphics.Color.red(parsedBg) / 255f
+    val g = android.graphics.Color.green(parsedBg) / 255f
+    val b = android.graphics.Color.blue(parsedBg) / 255f
+    val isLightBg = (0.299f * r + 0.587f * g + 0.114f * b) > 0.65f
+    val fgInt = if (isLightBg) android.graphics.Color.parseColor("#141820") else android.graphics.Color.WHITE
+    val borderInt = if (isLightBg) android.graphics.Color.parseColor("#2A303C") else android.graphics.Color.WHITE
 
-    // Значок трамвая (с пантографом) или автобуса
-    val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-    }
-    val fillIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
+    // Тень + цветной круг + контрастная обводка
+    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = parsedBg
         style = Paint.Style.FILL
     }
-    val ix = padX + 4f
-    val bodyRect = RectF(ix, 17f, ix + 24f, 43f)
-    canvas.drawRoundRect(bodyRect, 4f, 4f, iconPaint)
-    // Лобовое стекло
-    canvas.drawRect(ix + 4f, 21f, ix + 20f, 31f, fillIconPaint)
-    // Фары
-    canvas.drawCircle(ix + 6f, 37f, 2.2f, fillIconPaint)
-    canvas.drawCircle(ix + 18f, 37f, 2.2f, fillIconPaint)
+    val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = borderInt
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+    }
+    canvas.drawCircle(cx, cy, radius, bgPaint)
+    canvas.drawCircle(cx, cy, radius, borderPaint)
+
+    // Значок трамвая / автобуса в верхней половине кружка
+    val iconStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = fgInt
+        style = Paint.Style.STROKE
+        strokeWidth = 2.6f
+    }
+    val iconFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = fgInt
+        style = Paint.Style.FILL
+    }
+    val ix = cx - 11f
+    val iy = 18f
+    val bodyRect = RectF(ix, iy, ix + 22f, iy + 22f)
+    canvas.drawRoundRect(bodyRect, 3.5f, 3.5f, iconStroke)
+    canvas.drawRect(ix + 3.5f, iy + 3.5f, ix + 18.5f, iy + 12f, iconFill)
+    canvas.drawCircle(ix + 5.5f, iy + 17f, 1.8f, iconFill)
+    canvas.drawCircle(ix + 16.5f, iy + 17f, 1.8f, iconFill)
     if (isTram) {
-        // Пантограф сверху для трамвая
-        canvas.drawLine(ix + 12f, 17f, ix + 12f, 11f, iconPaint)
-        canvas.drawLine(ix + 6f, 11f, ix + 18f, 11f, iconPaint)
+        canvas.drawLine(cx, iy, cx, iy - 5f, iconStroke)
+        canvas.drawLine(cx - 5f, iy - 5f, cx + 5f, iy - 5f, iconStroke)
     } else {
-        // Колёса снизу для автобуса
-        canvas.drawCircle(ix + 6f, 46f, 2.5f, fillIconPaint)
-        canvas.drawCircle(ix + 18f, 46f, 2.5f, fillIconPaint)
+        canvas.drawCircle(ix + 5.5f, iy + 24.5f, 2f, iconFill)
+        canvas.drawCircle(ix + 16.5f, iy + 24.5f, 2f, iconFill)
     }
 
-    // Номер линии
-    val baseline = height / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-    canvas.drawText(label, padX + iconArea, baseline, textPaint)
+    // Номер линии в нижней половине кружка
+    val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = fgInt
+        textSize = if (label.length >= 3) 22f else 25f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+    canvas.drawText(label, cx, size - 15f, textPaint)
 
     return bitmap
 }
@@ -1119,13 +1651,18 @@ private fun fitCameraToJourney(
     }
 }
 
+/**
+ * Чистый, контрастный стиль векторной карты для локального `poznan.pmtiles` (Protomaps v4).
+ * Разделяет дороги по иерархии (автомагистрали, главные улицы, локальные улицы, тропинки)
+ * с плавным масштабированием ширины от зума и скруглёнными перекрёстками.
+ */
 private fun buildOfflineMapStyleJson(localMapFile: File?): String {
     if (localMapFile != null && localMapFile.exists()) {
         val uri = "pmtiles://file://${localMapFile.absolutePath}"
         return """
             {
               "version": 8,
-              "name": "Poznan Offline PMTiles",
+              "name": "Poznan Offline Clean Dark",
               "sources": {
                 "poznan": {
                   "type": "vector",
@@ -1136,35 +1673,160 @@ private fun buildOfflineMapStyleJson(localMapFile: File?): String {
                 {
                   "id": "background",
                   "type": "background",
-                  "paint": { "background-color": "#111827" }
+                  "paint": { "background-color": "#0D1522" }
                 },
                 {
-                  "id": "water",
+                  "id": "pm-earth",
                   "type": "fill",
                   "source": "poznan",
-                  "source-layer": "water",
-                  "paint": { "fill-color": "#1E3A5F" }
+                  "source-layer": "earth",
+                  "paint": { "fill-color": "#111A2B" }
                 },
                 {
-                  "id": "parks",
+                  "id": "pm-parks",
                   "type": "fill",
                   "source": "poznan",
                   "source-layer": "landuse",
-                  "paint": { "fill-color": "#132A22" }
+                  "filter": ["in", "kind", "park", "forest", "wood", "grass", "meadow", "cemetery", "recreation_ground", "garden", "nature_reserve", "scrub"],
+                  "paint": { "fill-color": "#132B24", "fill-opacity": 0.85 }
                 },
                 {
-                  "id": "roads",
+                  "id": "pm-water",
+                  "type": "fill",
+                  "source": "poznan",
+                  "source-layer": "water",
+                  "filter": ["==", ["geometry-type"], "Polygon"],
+                  "paint": { "fill-color": "#173F6B" }
+                },
+                {
+                  "id": "pm-water-lines",
                   "type": "line",
                   "source": "poznan",
-                  "source-layer": "roads",
-                  "paint": { "line-color": "#374151", "line-width": 2 }
+                  "source-layer": "water",
+                  "filter": ["==", ["geometry-type"], "LineString"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#173F6B",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.0, 14, 2.5, 16, 4.5]
+                  }
                 },
                 {
-                  "id": "buildings",
+                  "id": "pm-buildings",
                   "type": "fill",
                   "source": "poznan",
                   "source-layer": "buildings",
-                  "paint": { "fill-color": "#1F2937", "fill-opacity": 0.85 }
+                  "minzoom": 13,
+                  "paint": {
+                    "fill-color": "#1C293D",
+                    "fill-outline-color": "#273750",
+                    "fill-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0.35, 15, 0.85]
+                  }
+                },
+                {
+                  "id": "pm-rail",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 12,
+                  "filter": ["==", "kind", "rail"],
+                  "paint": {
+                    "line-color": "#283548",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.8, 15, 1.6],
+                    "line-opacity": 0.65
+                  }
+                },
+                {
+                  "id": "pm-paths",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 15,
+                  "filter": ["in", "kind", "path", "other"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#2B3A50",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 15, 1.0, 17, 2.2],
+                    "line-dasharray": [2, 2],
+                    "line-opacity": 0.55
+                  }
+                },
+                {
+                  "id": "pm-minor-casing",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 12,
+                  "filter": ["==", "kind", "minor_road"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#0A101B",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 1.8, 14, 4.8, 16, 11.0]
+                  }
+                },
+                {
+                  "id": "pm-minor-fill",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 12,
+                  "filter": ["==", "kind", "minor_road"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#33445E",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 1.0, 14, 3.2, 16, 8.2]
+                  }
+                },
+                {
+                  "id": "pm-major-casing",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 9,
+                  "filter": ["==", "kind", "major_road"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#090F1A",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 10, 2.6, 13, 6.2, 16, 15.0]
+                  }
+                },
+                {
+                  "id": "pm-major-fill",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 9,
+                  "filter": ["==", "kind", "major_road"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#526787",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 10, 1.5, 13, 4.4, 16, 12.0]
+                  }
+                },
+                {
+                  "id": "pm-highway-casing",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 7,
+                  "filter": ["==", "kind", "highway"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#090F1A",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 9, 3.2, 13, 8.0, 16, 18.0]
+                  }
+                },
+                {
+                  "id": "pm-highway-fill",
+                  "type": "line",
+                  "source": "poznan",
+                  "source-layer": "roads",
+                  "minzoom": 7,
+                  "filter": ["==", "kind", "highway"],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#6E85A8",
+                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 9, 2.0, 13, 6.0, 16, 14.5]
+                  }
                 }
               ]
             }
@@ -1180,7 +1842,7 @@ private fun buildOfflineMapStyleJson(localMapFile: File?): String {
             {
               "id": "background",
               "type": "background",
-              "paint": { "background-color": "#0F172A" }
+              "paint": { "background-color": "#0D1522" }
             }
           ]
         }

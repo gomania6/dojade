@@ -10,67 +10,69 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
 
-// ZTM Poznań Brand & Transit Palette
-val ZtmGreen = Color(0xFF006B54)
-val ZtmGreenLight = Color(0xFF22C55E)
-val ZtmTramColor = Color(0xFF007A5E)
-val ZtmBusColor = Color(0xFF1565C0)
-val LiveGreen = Color(0xFF16A34A)
-val DeparturePillGreen = Color(0xFF16A34A)
-val ArrivalPillBlue = Color(0xFF0EA5E9)
-val OfflineGray = Color(0xFF6B7280)
-val DelayAmber = Color(0xFFD97706)
-val DelayRed = Color(0xFFDC2626)
+// ZTM Poznań Brand & Transit Palette (softened, eye-friendly AMOLED colors)
+val ZtmGreen = Color(0xFF1F7A63)
+val ZtmGreenLight = Color(0xFF52C48A)
+val ZtmTramColor = Color(0xFF2B8A72)
+val ZtmBusColor = Color(0xFF3B74B8)
+val NightBusWhite = Color(0xFFEAEFF5)
+val NightBusOnWhite = Color(0xFF141820)
+val LiveGreen = Color(0xFF44B87D)
+val DeparturePillGreen = Color(0xFF359E6B)
+val ArrivalPillBlue = Color(0xFF4898C9)
+val OfflineGray = Color(0xFF7B828E)
+val DelayAmber = Color(0xFFD4974A)
+val DelayRed = Color(0xFFD96B6B)
 
 private val LightColors = lightColorScheme(
     primary = ZtmGreen,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFC2F0DF),
-    onPrimaryContainer = Color(0xFF002117),
+    primaryContainer = Color(0xFFD0EFE3),
+    onPrimaryContainer = Color(0xFF0A291F),
     secondary = ZtmBusColor,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFD5E3FF),
-    onSecondaryContainer = Color(0xFF001C3B),
-    background = Color(0xFFF6F8F7),
-    onBackground = Color(0xFF111816),
-    surface = Color.White,
-    onSurface = Color(0xFF111816),
-    surfaceVariant = Color(0xFFE7ECEA),
-    onSurfaceVariant = Color(0xFF4A5450),
-    outline = Color(0xFFD0D7D4),
+    secondaryContainer = Color(0xFFDCE6F7),
+    onSecondaryContainer = Color(0xFF0E2340),
+    background = Color(0xFFF6F7F8),
+    onBackground = Color(0xFF181C20),
+    surface = Color(0xFFFCFDFD),
+    onSurface = Color(0xFF181C20),
+    surfaceVariant = Color(0xFFE9ECEF),
+    onSurfaceVariant = Color(0xFF525A62),
+    outline = Color(0xFFD2D8DD),
     error = DelayRed,
     onError = Color.White
 )
 
-// True AMOLED Pitch-Black Dark Theme
+// True AMOLED Pitch-Black Dark Theme with soft, low-glare accents
 private val AmoledDarkColors = darkColorScheme(
     primary = ZtmGreenLight,
-    onPrimary = Color(0xFF002914),
-    primaryContainer = Color(0xFF0D2E1E),
-    onPrimaryContainer = Color(0xFFA7F3D0),
+    onPrimary = Color(0xFF072617),
+    primaryContainer = Color(0xFF132C21),
+    onPrimaryContainer = Color(0xFFB7EAD0),
     secondary = ArrivalPillBlue,
-    onSecondary = Color(0xFF00263B),
-    secondaryContainer = Color(0xFF0C2A3D),
-    onSecondaryContainer = Color(0xFFBAE6FD),
-    tertiary = Color(0xFFFACC15),
-    onTertiary = Color(0xFF2A2100),
-    tertiaryContainer = Color(0xFF2E260A),
-    onTertiaryContainer = Color(0xFFFEF08A),
+    onSecondary = Color(0xFF082233),
+    secondaryContainer = Color(0xFF132736),
+    onSecondaryContainer = Color(0xFFC5E1F4),
+    tertiary = Color(0xFFE5C76B),
+    onTertiary = Color(0xFF2B230A),
+    tertiaryContainer = Color(0xFF2D2714),
+    onTertiaryContainer = Color(0xFFF4E4AE),
     background = Color(0xFF000000),
-    onBackground = Color(0xFFF5F5F7),
-    surface = Color(0xFF121214),
-    onSurface = Color(0xFFF5F5F7),
-    surfaceVariant = Color(0xFF1C1C20),
-    onSurfaceVariant = Color(0xFF9A9AA4),
+    onBackground = Color(0xFFECEEF2),
+    surface = Color(0xFF111215),
+    onSurface = Color(0xFFECEEF2),
+    surfaceVariant = Color(0xFF1B1D22),
+    onSurfaceVariant = Color(0xFF9AA0AC),
     surfaceContainerLowest = Color(0xFF000000),
-    surfaceContainerLow = Color(0xFF0A0A0C),
-    surfaceContainer = Color(0xFF121214),
-    surfaceContainerHigh = Color(0xFF1A1A1E),
-    surfaceContainerHighest = Color(0xFF232328),
-    outline = Color(0xFF2E2E35),
-    outlineVariant = Color(0xFF222228),
-    error = Color(0xFFF87171),
-    onError = Color(0xFF450A0A)
+    surfaceContainerLow = Color(0xFF0A0B0D),
+    surfaceContainer = Color(0xFF111215),
+    surfaceContainerHigh = Color(0xFF191B20),
+    surfaceContainerHighest = Color(0xFF22252C),
+    outline = Color(0xFF2E313A),
+    outlineVariant = Color(0xFF21242B),
+    error = Color(0xFFE07A7A),
+    onError = Color(0xFF3E1010)
 )
 
 // Типографика увеличена для комфортной читаемости на современных AMOLED-экранах

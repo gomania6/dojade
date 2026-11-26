@@ -69,6 +69,7 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenSyncAndMap: () -> Unit,
+    showBackButton: Boolean = true,
     viewModel: SettingsViewModel = koinViewModel()
 ) {
     val settings by viewModel.appSettings.collectAsStateWithLifecycle()
@@ -79,11 +80,14 @@ fun SettingsScreen(
     var preferredLineInput by remember { mutableStateOf("") }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
+                    if (showBackButton) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
+                        }
                     }
                 },
                 title = {

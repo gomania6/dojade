@@ -1,6 +1,14 @@
 package pl.poznan.offdojade.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +28,7 @@ import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
@@ -29,14 +38,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,12 +58,15 @@ import pl.poznan.offdojade.domain.model.CatchabilityInfo
 import pl.poznan.offdojade.domain.model.CatchabilityStatus
 import pl.poznan.offdojade.domain.model.CheapestTicketChoice
 import pl.poznan.offdojade.domain.model.TicketRecommendation
+import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.tariff.ZtmTicketCalculator
 import pl.poznan.offdojade.ui.localization.AppStrings
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.DelayAmber
 import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.LiveGreen
+import pl.poznan.offdojade.ui.theme.NightBusOnWhite
+import pl.poznan.offdojade.ui.theme.NightBusWhite
 import pl.poznan.offdojade.ui.theme.OfflineGray
 import pl.poznan.offdojade.ui.theme.ZtmBusColor
 import pl.poznan.offdojade.ui.theme.ZtmTramColor
@@ -106,6 +122,76 @@ object TimeFormatUtils {
     }
 }
 
+/**
+ * Анимированный индикатор живого сигнала транспорта:
+ * плавно появляется при получении GTFS-RT и мягко пульсирует радиоволной.
+ */
+@Composable
+fun AnimatedLiveSignal(
+    isDelayed: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (isDelayed) DelayRed else LiveGreen
+    var appeared by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { appeared = true }
+
+    val enterAlpha by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+        label = "liveSignalEnterAlpha"
+    )
+    val enterScale by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0.55f,
+        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        label = "liveSignalEnterScale"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "liveSignalPulse")
+    val iconPulse by infiniteTransition.animateFloat(
+        initialValue = 0.88f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "liveIconPulse"
+    )
+    val waveProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "liveWaveProgress"
+    )
+
+    Box(
+        modifier = modifier
+            .size(20.dp)
+            .alpha(enterAlpha)
+            .scale(enterScale),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(20.dp)) {
+            val radius = (size.minDimension / 2f) * (0.45f + 0.55f * waveProgress)
+            drawCircle(
+                color = tint.copy(alpha = (1f - waveProgress) * 0.42f),
+                radius = radius,
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+        }
+        Icon(
+            imageVector = Icons.Default.Sensors,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier
+                .size(15.dp)
+                .scale(iconPulse)
+        )
+    }
+}
+
 @Composable
 fun RealtimeStatusBadge(
     status: RealtimeStatus,
@@ -114,6 +200,22 @@ fun RealtimeStatusBadge(
     val isLive = status is RealtimeStatus.Live
     val color = if (isLive) LiveGreen else OfflineGray
     val text = if (isLive) "Live • ZTM" else "Offline"
+
+    val dotAlpha = if (isLive) {
+        val infinite = rememberInfiniteTransition(label = "statusDotPulse")
+        val a by infinite.animateFloat(
+            initialValue = 0.45f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "dotAlpha"
+        )
+        a
+    } else {
+        1f
+    }
 
     Surface(
         modifier = modifier,
@@ -128,6 +230,7 @@ fun RealtimeStatusBadge(
             Box(
                 modifier = Modifier
                     .size(8.dp)
+                    .alpha(dotAlpha)
                     .clip(CircleShape)
                     .background(color)
             )
@@ -150,26 +253,35 @@ fun LineBadge(
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
-    val parsedColor = colorHex?.takeIf { it.isNotBlank() }?.let { hex ->
-        runCatching {
-            val clean = hex.trim().removePrefix("#")
-            Color(android.graphics.Color.parseColor("#$clean"))
-        }.getOrNull()
+    val isNightBus = !isTram && TransportMode.isNightLine(shortName)
+    val parsedColor = if (isNightBus) {
+        NightBusWhite
+    } else {
+        colorHex?.takeIf { it.isNotBlank() }?.let { hex ->
+            runCatching {
+                val clean = hex.trim().removePrefix("#")
+                Color(android.graphics.Color.parseColor("#$clean"))
+            }.getOrNull()
+        }
     }
     val bgColor = parsedColor ?: if (isTram) ZtmTramColor else ZtmBusColor
     val bgLuminance = bgColor.luminance()
     val isLightBg = bgLuminance > 0.55f
 
-    val parsedTextColor = textColorHex?.takeIf { it.isNotBlank() }?.let { hex ->
-        runCatching {
-            val clean = hex.trim().removePrefix("#")
-            Color(android.graphics.Color.parseColor("#$clean"))
-        }.getOrNull()
+    val parsedTextColor = if (isNightBus) {
+        NightBusOnWhite
+    } else {
+        textColorHex?.takeIf { it.isNotBlank() }?.let { hex ->
+            runCatching {
+                val clean = hex.trim().removePrefix("#")
+                Color(android.graphics.Color.parseColor("#$clean"))
+            }.getOrNull()
+        }
     }
     val fgColor = if (parsedTextColor != null && kotlin.math.abs(parsedTextColor.luminance() - bgLuminance) > 0.25f) {
         parsedTextColor
     } else if (isLightBg) {
-        Color(0xFF111816)
+        NightBusOnWhite
     } else {
         Color.White
     }
@@ -369,8 +481,12 @@ fun TicketRecommendationCard(
                     modifier = Modifier.weight(1f)
                 )
 
+                val localizedTicketDuration = s.ticketDurationLabel(
+                    activeTicket.recommendedTimeTicket.id,
+                    activeTicket.recommendedTimeTicket.maxMinutes
+                )
                 TicketOptionTile(
-                    title = s.timeTicketLabel(activeTicket.recommendedTimeTicket.label),
+                    title = s.timeTicketLabel(localizedTicketDuration),
                     subtitle = s.estimateMinutes(activeTicket.totalEstimatedMinutes),
                     price = ZtmTicketCalculator.formatPln(activeTicket.recommendedTimeTicketPricePln),
                     isBest = isTimeWinner,
@@ -380,6 +496,21 @@ fun TicketRecommendationCard(
             }
 
             if (activeTicket.tightFitWarning != null) {
+                val pureTicket = pl.poznan.offdojade.config.ZtmTariffConfig.TIME_TICKETS
+                    .firstOrNull { activeTicket.pureDurationMinutes <= it.maxMinutes }
+                    ?: pl.poznan.offdojade.config.ZtmTariffConfig.TIME_TICKETS.last()
+                val localizedWarning = s.tightFitWarningText(
+                    activeTicket.pureDurationMinutes,
+                    activeTicket.delayMinutes,
+                    activeTicket.bufferMinutes,
+                    activeTicket.totalEstimatedMinutes,
+                    s.ticketDurationLabel(pureTicket.id, pureTicket.maxMinutes),
+                    s.ticketDurationLabel(
+                        activeTicket.recommendedTimeTicket.id,
+                        activeTicket.recommendedTimeTicket.maxMinutes
+                    ),
+                    ZtmTicketCalculator.formatPln(activeTicket.recommendedTimeTicketPricePln)
+                )
                 Spacer(Modifier.height(8.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -398,7 +529,7 @@ fun TicketRecommendationCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = activeTicket.tightFitWarning,
+                            text = localizedWarning,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )

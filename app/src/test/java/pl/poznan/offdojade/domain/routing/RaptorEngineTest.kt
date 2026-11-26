@@ -12,6 +12,7 @@ import pl.poznan.offdojade.data.local.entity.StopTimeEntity
 import pl.poznan.offdojade.data.local.entity.TripEntity
 import pl.poznan.offdojade.domain.model.AppLanguage
 import pl.poznan.offdojade.domain.model.JourneyLeg
+import pl.poznan.offdojade.domain.model.RoutePreference
 import pl.poznan.offdojade.domain.model.TripSettings
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.stringsFor
@@ -516,5 +517,187 @@ class RaptorEngineTest {
         assertEquals(2, sliced.outsideSegments.size)
         assertEquals(listOf(shape[2], shape[3], shape[4]), sliced.outsideSegments[0])
         assertEquals(listOf(shape[6], shape[7], shape[8]), sliced.outsideSegments[1])
+    }
+
+    @Test
+    fun arriveBySearch_returnsLatestDeparturesArrivingOnOrBeforeTargetTime() {
+        val stops = listOf(
+            StopEntity("A", "A", "Stop A", 52.40, 16.90, "A", "1"),
+            StopEntity("B", "B", "Stop B", 52.41, 16.92, "A", "1")
+        )
+        val routes = listOf(RouteEntity("R1", "ztm", "1", "A - B", 0, "007A5E", "FFFFFF"))
+        // Рейсы каждые 15 мин с 08:00 до 10:00, в пути 10 мин
+        val trips = (0..8).map { i -> TripEntity("T_$i", "R1", "WK", "Stop B", 0, "") }
+        val stopTimes = (0..8).flatMap { i ->
+            val dep = 8 * 3600 + i * 15 * 60
+            listOf(
+                StopTimeEntity("T_$i", 1, "A", dep, dep),
+                StopTimeEntity("T_$i", 2, "B", dep + 600, dep + 600)
+            )
+        }
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        // Нужно приехать к 09:30 -> самый поздний подходящий рейс: 09:15 -> 09:25 (рейс 09:30 -> 09:40 уже поздно!)
+        val targetArrival = 9 * 3600 + 30 * 60
+        val results = engine.searchArrivingByJourneys(
+            data = graph,
+            originStopId = "A",
+            originLat = 52.40,
+            originLon = 16.90,
+            targetStopId = "B",
+            arriveByTimeSec = targetArrival,
+            limit = 3
+        )
+
+        assertEquals(3, results.size)
+        assertTrue(results.all { it.arrivalTimeSec <= targetArrival })
+        assertEquals(9 * 3600 + 15 * 60, results.last().departureTimeSec)
+        assertEquals(9 * 3600 + 25 * 60, results.last().arrivalTimeSec)
+    }
+
+    @Test
+    fun bestMode_hidesTwoTransferVariantWhenOneTransferExists_fastestModeKeepsIt() {
+        val stops = listOf(
+            StopEntity("S_KOM", "S1", "Komorniki", 52.340, 16.810, "B", "1"),
+            StopEntity("S_GOR", "S2", "Górczyn", 52.382, 16.878, "A", "1"),
+            StopEntity("S_MID", "S3", "Bałtyk", 52.404, 16.906, "A", "1"),
+            StopEntity("S_KAP", "S4", "Rondo Kaponiera", 52.408, 16.912, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R702", "ztm", "702", "702", 3, "1565C0", "FFFFFF"),
+            RouteEntity("R5", "ztm", "5", "5", 0, "007A5E", "FFFFFF"),
+            RouteEntity("R168", "ztm", "168", "168", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T702", "R702", "WK", "Górczyn", 0, ""),
+            TripEntity("T5", "R5", "WK", "Kaponiera", 0, ""),
+            TripEntity("T168", "R168", "WK", "Kaponiera", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            // 702: 20:36 -> 21:00
+            StopTimeEntity("T702", 1, "S_KOM", sec(20, 36), sec(20, 36)),
+            StopTimeEntity("T702", 2, "S_GOR", sec(21, 0), sec(21, 0)),
+            // 5: 21:03 -> 21:18 (Bałtyk) -> 21:26 (Kaponiera)  [1 пересадка, 50 мин]
+            StopTimeEntity("T5", 1, "S_GOR", sec(21, 3), sec(21, 3)),
+            StopTimeEntity("T5", 2, "S_MID", sec(21, 18), sec(21, 18)),
+            StopTimeEntity("T5", 3, "S_KAP", sec(21, 26), sec(21, 26)),
+            // 168: 21:20 (Bałtyk) -> 21:24 (Kaponiera)  [2 пересадки, 48 мин — на 2 мин быстрее!]
+            StopTimeEntity("T168", 1, "S_MID", sec(21, 20), sec(21, 20)),
+            StopTimeEntity("T168", 2, "S_KAP", sec(21, 24), sec(21, 24))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        // Режим «Лучшее» (BEST): вариант с 2 пересадками (702->5->168) НЕ показывается
+        val bestResults = engine.searchFromStop(
+            data = graph,
+            originStopId = "S_KOM",
+            targetStopId = "S_KAP",
+            departureTimeSec = sec(20, 30),
+            tripSettings = TripSettings(routePreference = RoutePreference.BEST, minTransferMinutes = 1)
+        )
+        assertEquals(1, bestResults.size)
+        assertEquals(1, bestResults.first().transferCount)
+        assertEquals(listOf("702", "5"), bestResults.first().transitLegs.map { it.routeShortName })
+
+        // Режим «Быстрое» (FASTEST): экономия всего 2 мин при лишней 2-й пересадке теперь отклоняется
+        // в пользу минимальных пересадок (702->5)
+        val fastestResults = engine.searchFromStop(
+            data = graph,
+            originStopId = "S_KOM",
+            targetStopId = "S_KAP",
+            departureTimeSec = sec(20, 30),
+            tripSettings = TripSettings(routePreference = RoutePreference.FASTEST, minTransferMinutes = 1)
+        )
+        assertEquals(1, fastestResults.size)
+        assertEquals(1, fastestResults.first().transferCount)
+        assertEquals(listOf("702", "5"), fastestResults.first().transitLegs.map { it.routeShortName })
+    }
+
+    @Test
+    fun twoTransferRoute_isShownAsFallbackWhenNoSimpleRoutesExist() {
+        val stops = listOf(
+            StopEntity("S1", "S1", "Komorniki", 52.340, 16.810, "B", "1"),
+            StopEntity("S2", "S2", "Górczyn", 52.382, 16.878, "A", "1"),
+            StopEntity("S3", "S3", "Bałtyk", 52.404, 16.906, "A", "1"),
+            StopEntity("S4", "S4", "Rondo Kaponiera", 52.408, 16.912, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R250", "ztm", "250", "250", 3, "000000", "FFFFFF"),
+            RouteEntity("R201", "ztm", "201", "201", 0, "000000", "FFFFFF"),
+            RouteEntity("R213", "ztm", "213", "213", 3, "000000", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T250", "R250", "WK", "Górczyn", 0, ""),
+            TripEntity("T201", "R201", "WK", "Bałtyk", 0, ""),
+            TripEntity("T213", "R213", "WK", "Kaponiera", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            // Ночной рейс с 2 пересадками — единственный доступный вариант поздно вечером
+            StopTimeEntity("T250", 1, "S1", sec(23, 10), sec(23, 10)),
+            StopTimeEntity("T250", 2, "S2", sec(23, 25), sec(23, 25)),
+            StopTimeEntity("T201", 1, "S2", sec(23, 28), sec(23, 28)),
+            StopTimeEntity("T201", 2, "S3", sec(23, 40), sec(23, 40)),
+            StopTimeEntity("T213", 1, "S3", sec(23, 43), sec(23, 43)),
+            StopTimeEntity("T213", 2, "S4", sec(23, 50), sec(23, 50))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "S1",
+            originLat = 52.340,
+            originLon = 16.810,
+            targetStopId = "S4",
+            departureTimeSec = sec(23, 0),
+            tripSettings = TripSettings(routePreference = RoutePreference.BEST, minTransferMinutes = 1),
+            limit = 5
+        )
+        assertEquals(1, results.size)
+        assertEquals(2, results.first().transferCount)
+        assertEquals(listOf("250", "201", "213"), results.first().transitLegs.map { it.routeShortName })
+    }
+
+    @Test
+    fun shortHopUnder500m_stillFindsDirectTram_andParetoPrunesStrictlyDominatedBus() {
+        val stops = listOf(
+            // ~400 м между остановками (меньше 500 м радиуса nearbyAccesses!)
+            StopEntity("RKAP", "RKAP", "Rondo Kaponiera", 52.4080, 16.9120, "A", "1"),
+            StopEntity("MTEA", "MTEA", "Most Teatralny", 52.4116, 16.9128, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R_SLOW", "ztm", "163", "Slow Bus", 3, "1565C0", "FFFFFF"),
+            RouteEntity("R_FAST", "ztm", "12", "Fast Tram", 0, "007A5E", "FFFFFF")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val trips = listOf(
+            // Медленный автобус: выезд 10:00, приезд 10:25 (строго доминируется трамваем 10:05 -> 10:10!)
+            TripEntity("T_SLOW", "R_SLOW", "WK", "Most Teatralny", 0, ""),
+            // Быстрый трамвай: выезд ПОЗЖЕ (10:05), приезд РАНЬШЕ (10:10)
+            TripEntity("T_FAST", "R_FAST", "WK", "Most Teatralny", 0, "")
+        )
+        val stopTimes = listOf(
+            StopTimeEntity("T_SLOW", 1, "RKAP", sec(10, 0), sec(10, 0)),
+            StopTimeEntity("T_SLOW", 2, "MTEA", sec(10, 25), sec(10, 25)),
+
+            StopTimeEntity("T_FAST", 1, "RKAP", sec(10, 5), sec(10, 5)),
+            StopTimeEntity("T_FAST", 2, "MTEA", sec(10, 10), sec(10, 10))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "RKAP",
+            originLat = 52.4080,
+            originLon = 16.9120,
+            targetStopId = "MTEA",
+            departureTimeSec = sec(9, 55),
+            limit = 5
+        )
+
+        assertTrue("Короткая поездка < 500 м должна находить транспорт", results.isNotEmpty())
+        assertEquals(1, results.size)
+        assertEquals("12", results.first().transitLegs.first().routeShortName)
     }
 }
