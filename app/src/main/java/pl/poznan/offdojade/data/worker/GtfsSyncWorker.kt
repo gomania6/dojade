@@ -68,21 +68,25 @@ class GtfsSyncWorker(
     }
 
     companion object {
-        private const val UNIQUE_WORK_NAME = "ztm_poznan_daily_gtfs_sync"
+        private const val UNIQUE_WORK_NAME = "ztm_poznan_background_gtfs_sync"
 
-        fun scheduleDailyWifiSync(context: Context) {
+        /**
+         * Планирует периодическое фоновое обновление оффлайн-базы расписаний (раз в 12 часов)
+         * при наличии любого интернет-соединения и достаточного заряда батареи.
+         */
+        fun scheduleBackgroundSync(context: Context) {
             val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(true)
                 .build()
 
-            val request = PeriodicWorkRequestBuilder<GtfsSyncWorker>(24, TimeUnit.HOURS)
+            val request = PeriodicWorkRequestBuilder<GtfsSyncWorker>(12, TimeUnit.HOURS)
                 .setConstraints(constraints)
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
         }

@@ -69,6 +69,12 @@ class OnboardingViewModel(
             }
             if (!dbHasData) {
                 startGtfsSync()
+            } else {
+                // Прогреваем граф и индекс остановок пока пользователь на экране ознакомления
+                viewModelScope.launch {
+                    transitGraphRepository.ensureLoadedForToday()
+                    transitGraphRepository.searchStopGroups("", limit = 1)
+                }
             }
             if (!mapExists) {
                 startMapDownload()
@@ -191,6 +197,7 @@ class OnboardingViewModel(
     private suspend fun finalizeGraphReload() {
         _uiState.update { it.copy(gtfsStage = "Построение быстрого графа RAPTOR…") }
         transitGraphRepository.reloadForToday()
+        transitGraphRepository.searchStopGroups("", limit = 1)
         preferencesRepository.setOnboardingCompleted(true)
         _uiState.update {
             it.copy(

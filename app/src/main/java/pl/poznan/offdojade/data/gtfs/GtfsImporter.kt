@@ -343,12 +343,16 @@ class GtfsImporter(
         val dep = CsvLineParser.parseGtfsTimeToSeconds(h.col(c, "departure_time"))
         val arrSec = arr ?: dep ?: return null
         val depSec = dep ?: arrSec
+        val pickupType = h.col(c, "pickup_type").toIntOrNull() ?: 0
+        val dropOffType = h.col(c, "drop_off_type").toIntOrNull() ?: 0
+        val onDemand = if (pickupType == 3 || dropOffType == 3) 1 else 0
         return StopTimeEntity(
             tripId = tripId,
             stopSequence = seq,
             stopId = stopId,
             arrivalTimeSec = arrSec,
-            departureTimeSec = depSec
+            departureTimeSec = depSec,
+            isOnDemand = onDemand
         )
     }
 

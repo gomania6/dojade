@@ -30,8 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 
 ZTM_GTFS_URL = "https://www.ztm.poznan.pl/pl/dla-deweloperow/getGTFSFile"
-ROOM_DB_VERSION = 2
-ROOM_IDENTITY_HASH = "ab98f15b12cd01a68b850d6296260438"
+ROOM_DB_VERSION = 3
+ROOM_IDENTITY_HASH = "5580ec83493b75b81b4aae9882bdb229"
 
 FOOTPATH_MAX_METERS = 300.0
 WALKING_SPEED_MPS = 1.2
@@ -139,6 +139,7 @@ def init_room_schema(conn: sqlite3.Connection) -> None:
             `stop_id` TEXT NOT NULL,
             `arrival_time_sec` INTEGER NOT NULL,
             `departure_time_sec` INTEGER NOT NULL,
+            `is_on_demand` INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(`trip_id`, `stop_sequence`)
         );
 
@@ -379,12 +380,15 @@ def build_database(zip_path: Path, output_dir: Path) -> dict:
             if arr_sec is None:
                 continue
             dep_sec = dep if dep is not None else arr_sec
-            batch.append((tid, seq, sid, arr_sec, dep_sec))
+            pickup_type = int(r.get("pickup_type") or 0)
+            drop_off_type = int(r.get("drop_off_type") or 0)
+            is_on_demand = 1 if (pickup_type == 3 or drop_off_type == 3) else 0
+            batch.append((tid, seq, sid, arr_sec, dep_sec, is_on_demand))
             if len(batch) >= 10_000:
-                cur.executemany("INSERT OR REPLACE INTO stop_times VALUES (?, ?, ?, ?, ?)", batch)
+                cur.executemany("INSERT OR REPLACE INTO stop_times VALUES (?, ?, ?, ?, ?, ?)", batch)
                 batch.clear()
         if batch:
-            cur.executemany("INSERT OR REPLACE INTO stop_times VALUES (?, ?, ?, ?, ?)", batch)
+            cur.executemany("INSERT OR REPLACE INTO stop_times VALUES (?, ?, ?, ?, ?, ?)", batch)
 
         shape_batch = []
         for r in read_zip_csv(zf, "shapes.txt"):

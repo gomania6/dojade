@@ -42,6 +42,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.History
@@ -59,7 +62,12 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -103,8 +111,12 @@ import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
 import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
+import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 @Composable
@@ -366,13 +378,23 @@ fun HomeScreen(
                     val timeChipText = if (state.plannedTime.isNow) {
                         s.nowLabel
                     } else {
-                        val clock = TimeFormatUtils.formatClock(state.plannedTime.timeSec ?: 0)
+                        val today = LocalDate.now(ZoneId.of("Europe/Warsaw"))
+                        val selectedDate = state.plannedTime.resolveDate(today)
+                        val dateLabel = when (selectedDate) {
+                            today -> ""
+                            today.plusDays(1) -> "${s.tomorrowLabel}, "
+                            today.plusDays(2) -> "${s.dayAfterTomorrowLabel}, "
+                            else -> "${selectedDate.format(DateTimeFormatter.ofPattern("dd.MM"))}, "
+                        }
+                        val clock = TimeFormatUtils.formatClock(
+                            state.plannedTime.timeSec ?: LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+                        )
                         val modePrefix = if (state.plannedTime.mode == TimeQueryMode.ARRIVE_BY) {
                             "${s.arriveByLabel} "
                         } else {
                             ""
                         }
-                        "$modePrefix$clock"
+                        "$modePrefix$dateLabel$clock"
                     }
 
                     Surface(
@@ -584,16 +606,46 @@ fun HomeScreen(
                 }
             }
 
-            // Подсказки остановок и адресов
-            if (isSearchMode && (state.searchResults.isNotEmpty() || state.addressResults.isNotEmpty())) {
-                item {
+            // Подсказки остановок и адресов (если введён номер дома — адреса поднимаем наверх)
+            val looksLikeAddress = activeQuery.any { it.isDigit() }
+            val visibleStops = if (state.addressResults.isNotEmpty() || looksLikeAddress) {
+                state.searchResults.take(6)
+            } else {
+                state.searchResults
+            }
+            val showAddressCard = isSearchMode && (state.addressResults.isNotEmpty() || state.isSearchingAddresses)
+            val showStopsCard = isSearchMode && visibleStops.isNotEmpty()
+
+            if (showAddressCard && (looksLikeAddress || !showStopsCard)) {
+                item(key = "address_results_top") {
+                    AddressResultsCard(
+                        addresses = state.addressResults,
+                        isLoading = state.isSearchingAddresses,
+                        onSelect = { address ->
+                            focusManager.clearFocus()
+                            when (state.activeField) {
+                                ActiveStopField.FROM -> viewModel.selectFromAddress(address)
+                                ActiveStopField.TO -> {
+                                    viewModel.selectToAddress(address)
+                                    viewModel.prepareRouteSearch(RouteEndpoint.Address(address))
+                                    onOpenRouteResults()
+                                }
+                                null -> Unit
+                            }
+                        }
+                    )
+                }
+            }
+
+            if (showStopsCard) {
+                item(key = "stop_results_card") {
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surface,
                         border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Column {
-                            state.searchResults.forEachIndexed { idx, group ->
+                            visibleStops.forEachIndexed { idx, group ->
                                 StopGroupSearchRow(
                                     group = group,
                                     isFavorite = group.primaryStopId in favoriteIds,
@@ -612,31 +664,7 @@ fun HomeScreen(
                                     },
                                     onToggleFavorite = { viewModel.toggleFavoriteStop(group.primaryStopId) }
                                 )
-                                if (idx < state.searchResults.lastIndex || state.addressResults.isNotEmpty()) {
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 14.dp),
-                                        color = MaterialTheme.colorScheme.outlineVariant
-                                    )
-                                }
-                            }
-
-                            state.addressResults.forEachIndexed { idx, address ->
-                                AddressSearchRow(
-                                    address = address,
-                                    onClick = {
-                                        focusManager.clearFocus()
-                                        when (state.activeField) {
-                                            ActiveStopField.FROM -> viewModel.selectFromAddress(address)
-                                            ActiveStopField.TO -> {
-                                                viewModel.selectToAddress(address)
-                                                viewModel.prepareRouteSearch(RouteEndpoint.Address(address))
-                                                onOpenRouteResults()
-                                            }
-                                            null -> Unit
-                                        }
-                                    }
-                                )
-                                if (idx < state.addressResults.lastIndex) {
+                                if (idx < visibleStops.lastIndex) {
                                     HorizontalDivider(
                                         modifier = Modifier.padding(horizontal = 14.dp),
                                         color = MaterialTheme.colorScheme.outlineVariant
@@ -645,6 +673,27 @@ fun HomeScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (showAddressCard && !looksLikeAddress && showStopsCard) {
+                item(key = "address_results_bottom") {
+                    AddressResultsCard(
+                        addresses = state.addressResults,
+                        isLoading = state.isSearchingAddresses,
+                        onSelect = { address ->
+                            focusManager.clearFocus()
+                            when (state.activeField) {
+                                ActiveStopField.FROM -> viewModel.selectFromAddress(address)
+                                ActiveStopField.TO -> {
+                                    viewModel.selectToAddress(address)
+                                    viewModel.prepareRouteSearch(RouteEndpoint.Address(address))
+                                    onOpenRouteResults()
+                                }
+                                null -> Unit
+                            }
+                        }
+                    )
                 }
             }
 
@@ -899,7 +948,7 @@ fun HomeScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlanTimeDialog(
     initial: PlannedTime,
@@ -908,17 +957,53 @@ private fun PlanTimeDialog(
     onConfirm: (PlannedTime) -> Unit
 ) {
     val s = LocalStrings.current
-    val now = remember { LocalTime.now(ZoneId.of("Europe/Warsaw")) }
+    val warsawZone = remember { ZoneId.of("Europe/Warsaw") }
+    val today = remember { LocalDate.now(warsawZone) }
+    val now = remember { LocalTime.now(warsawZone) }
     val initialMinutes = (initial.timeSec ?: now.toSecondOfDay()) / 60
     var mode by remember { mutableStateOf(initial.mode) }
+    var selectedDate by remember { mutableStateOf(initial.resolveDate(today)) }
     var hour by remember { mutableIntStateOf((initialMinutes / 60) % 24) }
     var minute by remember { mutableIntStateOf(initialMinutes % 60) }
+    var showCalendarPicker by remember { mutableStateOf(false) }
+
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("dd.MM.yyyy (EEE)", Locale.getDefault()) }
+
+    if (showCalendarPicker) {
+        val initialMillis = selectedDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        DatePickerDialog(
+            onDismissRequest = { showCalendarPicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            val picked = Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()
+                            if (!picked.isBefore(today)) {
+                                selectedDate = picked
+                            }
+                        }
+                        showCalendarPicker = false
+                    }
+                ) {
+                    Text(s.doneLabel)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCalendarPicker = false }) {
+                    Text(s.close)
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(s.planTimeTitle, fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 // Режим: Отправление / Прибытие
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -938,7 +1023,82 @@ private fun PlanTimeDialog(
                     )
                 }
 
-                // Быстрые пресеты
+                // Выбор даты: Сегодня / Завтра / Послезавтра
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedDate == today,
+                        onClick = { selectedDate = today },
+                        label = { Text(s.todayLabel) }
+                    )
+                    FilterChip(
+                        selected = selectedDate == today.plusDays(1),
+                        onClick = { selectedDate = today.plusDays(1) },
+                        label = { Text(s.tomorrowLabel) }
+                    )
+                    FilterChip(
+                        selected = selectedDate == today.plusDays(2),
+                        onClick = { selectedDate = today.plusDays(2) },
+                        label = { Text(s.dayAfterTomorrowLabel) }
+                    )
+                }
+
+                // Переключатель произвольной даты + кнопка календаря
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(
+                            onClick = {
+                                if (selectedDate.isAfter(today)) {
+                                    selectedDate = selectedDate.minusDays(1)
+                                }
+                            },
+                            enabled = selectedDate.isAfter(today),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, contentDescription = null)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showCalendarPicker = true }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = selectedDate.format(dateFormatter),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        IconButton(
+                            onClick = { selectedDate = selectedDate.plusDays(1) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.ChevronRight, contentDescription = null)
+                        }
+                    }
+                }
+
+                // Быстрые пресеты времени
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -952,9 +1112,14 @@ private fun PlanTimeDialog(
                         FilterChip(
                             selected = false,
                             onClick = {
-                                val target = LocalTime.now().plusMinutes(addMin.toLong())
-                                hour = target.hour
-                                minute = target.minute
+                                val targetDateTime = LocalTime.now(warsawZone).plusMinutes(addMin.toLong())
+                                if (targetDateTime.isBefore(LocalTime.now(warsawZone))) {
+                                    selectedDate = today.plusDays(1)
+                                } else {
+                                    selectedDate = today
+                                }
+                                hour = targetDateTime.hour
+                                minute = targetDateTime.minute
                             },
                             label = { Text("+$addMin ${s.minShort}") }
                         )
@@ -994,7 +1159,14 @@ private fun PlanTimeDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onConfirm(PlannedTime(mode = mode, timeSec = hour * 3600 + minute * 60))
+                    val epochDay = if (selectedDate == today) null else selectedDate.toEpochDay()
+                    onConfirm(
+                        PlannedTime(
+                            mode = mode,
+                            timeSec = hour * 3600 + minute * 60,
+                            dateEpochDay = epochDay
+                        )
+                    )
                 }
             ) {
                 Text(s.doneLabel)
@@ -1148,6 +1320,73 @@ private fun QuickDestinationCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+}
+
+@Composable
+private fun AddressResultsCard(
+    addresses: List<AddressResult>,
+    isLoading: Boolean,
+    onSelect: (AddressResult) -> Unit
+) {
+    val s = LocalStrings.current
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Place,
+                        contentDescription = null,
+                        tint = ArrivalPillBlue,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = s.addressesSectionTitle,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = ArrivalPillBlue
+                    )
+                }
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(15.dp),
+                        strokeWidth = 2.dp,
+                        color = ArrivalPillBlue
+                    )
+                }
+            }
+            if (addresses.isNotEmpty()) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 14.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                addresses.forEachIndexed { idx, address ->
+                    AddressSearchRow(
+                        address = address,
+                        onClick = { onSelect(address) }
+                    )
+                    if (idx < addresses.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 14.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
+                }
+            }
         }
     }
 }

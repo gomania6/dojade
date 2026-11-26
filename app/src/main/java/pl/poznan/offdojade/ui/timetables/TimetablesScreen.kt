@@ -300,12 +300,12 @@ private fun LinesBrowserView(
             }
 
             else -> {
-                // Компактная сетка номеров линий (6 в ряд) для мгновенного выбора
+                // Компактная сетка номеров линий (6 в ряд) со стройными плашками как в поиске маршрутов
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(6),
                     contentPadding = PaddingValues(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(state.filteredRoutes, key = { it.routeId }) { route ->
@@ -313,9 +313,9 @@ private fun LinesBrowserView(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(42.dp)
+                                .height(34.dp)
                                 .clickable { onSelectRoute(route) },
-                            shape = RoundedCornerShape(8.dp),
+                            shape = RoundedCornerShape(7.dp),
                             color = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(
                                 width = 1.dp,

@@ -10,6 +10,7 @@ import pl.poznan.offdojade.data.local.DatabaseHolder
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.location.AddressSearchProvider
 import pl.poznan.offdojade.data.location.LocationProvider
+import pl.poznan.offdojade.data.location.WalkingRouteProvider
 import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.data.realtime.GtfsRtClient
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
@@ -36,6 +37,7 @@ val appModule = module {
     single { PreferencesRepository(androidContext()) }
     single { LocationProvider(androidContext()) }
     single { AddressSearchProvider(androidContext(), get()) }
+    single { WalkingRouteProvider(get()) }
     single { MapDownloader(androidContext(), get()) }
     single { PrebuiltDbDownloader(androidContext(), get(), get(), get()) }
     single { GtfsImporter(get(), get(), get()) }
@@ -47,7 +49,7 @@ val appModule = module {
     viewModel { OnboardingViewModel(get(), get(), get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get()) }
     viewModel { RouteResultsViewModel(get(), get(), get(), get(), get()) }
-    viewModel { RouteDetailsViewModel(get(), get(), get()) }
+    viewModel { RouteDetailsViewModel(get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get()) }
     viewModel { TimetablesViewModel(get()) }
 }

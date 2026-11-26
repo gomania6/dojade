@@ -39,16 +39,21 @@ enum class TimeQueryMode {
 }
 
 /**
- * Запланированное время поездки:
- * - [timeSec] == null -> «Сейчас» (текущее время)
+ * Запланированное время и дата поездки:
+ * - [timeSec] == null и [dateEpochDay] == null -> «Сейчас» (текущее время)
+ * - [dateEpochDay] == null -> сегодня; иначе конкретная дата (LocalDate.ofEpochDay)
  * - [mode] == DEPART_AT -> выезд в [timeSec]
  * - [mode] == ARRIVE_BY -> прибытие не позже [timeSec]
  */
 data class PlannedTime(
     val mode: TimeQueryMode = TimeQueryMode.DEPART_AT,
-    val timeSec: Int? = null
+    val timeSec: Int? = null,
+    val dateEpochDay: Long? = null
 ) {
-    val isNow: Boolean get() = timeSec == null
+    val isNow: Boolean get() = timeSec == null && dateEpochDay == null
+
+    fun resolveDate(today: java.time.LocalDate): java.time.LocalDate =
+        dateEpochDay?.let { java.time.LocalDate.ofEpochDay(it) } ?: today
 }
 
 /**

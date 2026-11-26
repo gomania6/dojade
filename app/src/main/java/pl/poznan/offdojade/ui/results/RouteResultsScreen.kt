@@ -388,25 +388,26 @@ private fun MinimalJourneyCard(
             .fillMaxWidth()
             .alpha(if (isDeparted) 0.58f else 1f)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 15.dp),
+                .padding(horizontal = 14.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Левая колонка: крупный обратный отсчёт (или точное время, если > 60 мин)
+            // Левая колонка: крупное время (28sp) и аккуратная маленькая подпись «По расписанию»
             Column(
-                modifier = Modifier.width(96.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                modifier = Modifier.width(86.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     text = if (isDeparted) s.departedLabel else if (isOverHour) s.onSchedule else s.departingCaption,
-                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -418,39 +419,41 @@ private fun MinimalJourneyCard(
                     if (isOverHour) {
                         Text(
                             text = TimeFormatUtils.formatClock(busDepSec),
-                            fontSize = 25.sp,
+                            fontSize = 28.sp,
+                            lineHeight = 30.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface
+                            color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
                         )
                     } else if (!isDeparted && deltaMins == 0) {
                         Text(
                             text = "<1",
-                            fontSize = 33.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = 35.sp,
+                            lineHeight = 34.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = s.minShort,
-                            style = MaterialTheme.typography.labelLarge,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 4.dp)
+                            modifier = Modifier.padding(bottom = 3.dp)
                         )
                     } else {
                         Text(
                             text = if (isDeparted) "-${deltaMins.coerceAtLeast(1)}" else "$deltaMins",
-                            fontSize = 33.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = 35.sp,
+                            lineHeight = 34.sp,
                             color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = s.minShort,
-                            style = MaterialTheme.typography.labelLarge,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 4.dp)
+                            modifier = Modifier.padding(bottom = 3.dp)
                         )
                     }
                     if (!isDeparted && hasRealtime) {
@@ -462,26 +465,29 @@ private fun MinimalJourneyCard(
                 }
             }
 
-            // Центральная колонка: минималистичные значки линий + зелёная и синяя капсулы времени
+            // Центральная колонка: одна ровная строка линий (даже при 2 пересадках!) + компактные капсулы времени
+            val isCompactLegs = journey.transitLegs.size >= 3
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(if (isCompactLegs) 4.dp else 6.dp)
                 ) {
                     journey.transitLegs.forEach { leg ->
                         MinimalLineChip(
                             shortName = leg.routeShortName,
-                            isTram = leg.isTram
+                            isTram = leg.isTram,
+                            compact = isCompactLegs,
+                            showIcon = journey.transitLegs.size <= 3
                         )
                     }
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     TimePill(
                         text = TimeFormatUtils.formatClock(busDepSec),
@@ -489,8 +495,9 @@ private fun MinimalJourneyCard(
                     )
                     Text(
                         text = "${journey.totalDurationMinutes} ${s.minShort}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
                     TimePill(
                         text = TimeFormatUtils.formatClock(journey.arrivalTimeSec),
@@ -502,18 +509,20 @@ private fun MinimalJourneyCard(
             // Правая колонка: общая длительность и минимальная цена билета
             Column(
                 horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
                     text = "${journey.totalDurationMinutes} ${s.minShort}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
                 Text(
                     text = ZtmTicketCalculator.formatPln(bestPricePln),
-                    style = MaterialTheme.typography.labelMedium,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
                 )
             }
         }
@@ -523,21 +532,25 @@ private fun MinimalJourneyCard(
 @Composable
 private fun MinimalLineChip(
     shortName: String,
-    isTram: Boolean
+    isTram: Boolean,
+    compact: Boolean = false,
+    showIcon: Boolean = true
 ) {
     val isNightBus = !isTram && TransportMode.isNightLine(shortName)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)
     ) {
-        Icon(
-            imageVector = if (isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
-            contentDescription = null,
-            tint = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(19.dp)
-        )
+        if (showIcon) {
+            Icon(
+                imageVector = if (isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
+                contentDescription = null,
+                tint = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(if (compact) 14.dp else 16.dp)
+            )
+        }
         Surface(
-            shape = RoundedCornerShape(7.dp),
+            shape = RoundedCornerShape(6.dp),
             color = if (isNightBus) NightBusWhite else Color.Transparent,
             border = BorderStroke(
                 width = 1.dp,
@@ -546,10 +559,15 @@ private fun MinimalLineChip(
         ) {
             Text(
                 text = shortName,
-                style = MaterialTheme.typography.titleSmall,
+                fontSize = if (compact) 12.5.sp else 14.sp,
+                lineHeight = if (compact) 15.sp else 17.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (isNightBus) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                maxLines = 1,
+                modifier = Modifier.padding(
+                    horizontal = if (compact) 5.dp else 7.dp,
+                    vertical = if (compact) 1.5.dp else 2.dp
+                )
             )
         }
     }
@@ -566,10 +584,12 @@ private fun TimePill(
     ) {
         Text(
             text = text,
-            style = MaterialTheme.typography.labelMedium,
+            fontSize = 11.5.sp,
+            lineHeight = 14.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
         )
     }
 }

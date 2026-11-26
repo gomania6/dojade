@@ -111,6 +111,7 @@ object TransitGraphBuilder {
         val tripStopTimeOffsets = IntArray(totalTrips + 1)
         val arrivalTimesSec = IntArray(totalStopTimeEntries)
         val departureTimesSec = IntArray(totalStopTimeEntries)
+        val stopTimeOnDemand = ByteArray(totalStopTimeEntries)
 
         // Для обратного индекса stop -> (pattern, pos)
         val stopPatternCounts = IntArray(stopCount)
@@ -134,6 +135,7 @@ object TransitGraphBuilder {
                 for (st in twt.stopTimes) {
                     arrivalTimesSec[stCursor] = st.arrivalTimeSec
                     departureTimesSec[stCursor] = st.departureTimeSec
+                    stopTimeOnDemand[stCursor] = if (st.isOnDemand == 1) 1 else 0
                     stCursor++
                 }
                 tripCursor++
@@ -223,6 +225,7 @@ object TransitGraphBuilder {
             tripStopTimeOffsets = tripStopTimeOffsets,
             arrivalTimesSec = arrivalTimesSec,
             departureTimesSec = departureTimesSec,
+            stopTimeOnDemand = stopTimeOnDemand,
             stopToPatternOffsets = stopToPatternOffsets,
             stopToPatterns = stopToPatterns,
             stopToPatternPos = stopToPatternPos,

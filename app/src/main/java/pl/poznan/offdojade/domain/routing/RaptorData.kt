@@ -40,6 +40,8 @@ class RaptorData(
     val tripStopTimeOffsets: IntArray,
     val arrivalTimesSec: IntArray,
     val departureTimesSec: IntArray,
+    /** 1 = остановка по требованию (pickup_type=3 или drop_off_type=3) */
+    val stopTimeOnDemand: ByteArray = ByteArray(arrivalTimesSec.size),
 
     // --- Обратный индекс: остановка -> список паттернов, проходящих через неё ---
     /** Длина = stopCount + 1 */
@@ -66,6 +68,26 @@ class RaptorData(
 
     fun tripDepartureAt(tripIdx: Int, pos: Int): Int =
         departureTimesSec[tripStopTimeOffsets[tripIdx] + pos]
+
+    fun tripIsOnDemandAt(tripIdx: Int, pos: Int): Boolean {
+        val idx = tripStopTimeOffsets[tripIdx] + pos
+        if (idx in stopTimeOnDemand.indices && stopTimeOnDemand[idx] == 1.toByte()) {
+            return true
+        }
+        val pIdx = tripPatternIndex[tripIdx]
+        val sIdx = patternStopAt(pIdx, pos)
+        val name = stopNames[sIdx]
+        return isOnDemandByName(name)
+    }
+
+    private fun isOnDemandByName(name: String): Boolean {
+        val lower = name.lowercase(java.util.Locale.ROOT)
+        return lower.contains("n/ż") ||
+            lower.contains("n/z") ||
+            lower.contains("(nż)") ||
+            lower.contains(" nż") ||
+            lower.contains("na żądanie")
+    }
 
     /**
      * Группировка всех платформ с одинаковым названием (например, все перроны "Rondo Kaponiera")

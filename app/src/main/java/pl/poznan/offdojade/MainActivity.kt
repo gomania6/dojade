@@ -17,15 +17,19 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -38,7 +42,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -85,6 +94,7 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             transitGraphRepository.ensureLoadedForToday()
+            transitGraphRepository.searchStopGroups("", limit = 1)
             checkAndAutoUpdateScheduleInBackground()
         }
 
@@ -121,13 +131,49 @@ class MainActivity : ComponentActivity() {
                 OffDojadeTheme(darkTheme = darkTheme) {
                     val onboardingDone by preferencesRepository.onboardingCompleted
                         .collectAsStateWithLifecycle(initialValue = null)
+                    val loadedGraph by transitGraphRepository.graph.collectAsStateWithLifecycle()
+                    var warmupTimedOut by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(onboardingDone) {
+                        if (onboardingDone == true && loadedGraph == null) {
+                            kotlinx.coroutines.delay(2_200L)
+                            warmupTimedOut = true
+                        }
+                    }
 
                     RequestLocationPermissionOnce()
 
-                    if (onboardingDone != null) {
+                    val readyToShowApp = onboardingDone == false ||
+                        (onboardingDone == true && (loadedGraph != null || warmupTimedOut))
+
+                    if (readyToShowApp) {
                         OffDojadeNavGraph(
                             startDestination = if (onboardingDone == true) Routes.HOME else Routes.ONBOARDING
                         )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Text(
+                                    text = "OffDojade",
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(28.dp),
+                                    strokeWidth = 2.6.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                 }
             }

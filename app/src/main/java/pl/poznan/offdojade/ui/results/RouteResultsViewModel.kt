@@ -15,15 +15,19 @@ import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
+import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.RouteSearchRequest
 import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TripSettings
+import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
+import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 enum class RouteSearchError {
     SCHEDULE_NOT_LOADED,
@@ -60,6 +64,9 @@ class RouteResultsViewModel(
     private var cachedOriginLon: Double = AppConfig.POZNAN_CENTER_LON
     private var currentTripSettings: TripSettings = TripSettings()
     private var activeRequest: RouteSearchRequest? = null
+    private var loadedDayOffset: Int = 0
+    private var maxDayOffset: Int = 2
+    private var activeDayGraph: RaptorData? = null
 
     init {
         viewModelScope.launch {
@@ -101,7 +108,19 @@ class RouteResultsViewModel(
                 )
             }
 
-            val graph = transitGraphRepository.ensureLoadedForToday()
+            val today = LocalDate.now(ZoneId.of("Europe/Warsaw"))
+            val planned = request.plannedTime
+            val targetDate = planned.resolveDate(today)
+            val initialDayOffset = ChronoUnit.DAYS.between(today, targetDate).toInt().coerceAtLeast(0)
+
+            val graph = if (initialDayOffset == 0) {
+                transitGraphRepository.ensureLoadedForToday()
+            } else {
+                transitGraphRepository.buildGraphForDate(targetDate)
+            }
+            loadedDayOffset = initialDayOffset
+            maxDayOffset = initialDayOffset + 2
+            activeDayGraph = graph
             if (graph == null) {
                 _uiState.update {
                     it.copy(
@@ -134,11 +153,11 @@ class RouteResultsViewModel(
             val targetStopId = (request.to as? RouteEndpoint.Stop)?.group?.primaryStopId
             val targetAddr = request.to as? RouteEndpoint.Address
 
-            val planned = request.plannedTime
-            val queryTimeSec = planned.timeSec ?: nowSec
+            val queryTimeSec = planned.timeSec ?: if (initialDayOffset == 0) nowSec else 8 * 3600
+            val activeDelays = if (initialDayOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
 
-            val results = withContext(Dispatchers.Default) {
-                if (planned.mode == TimeQueryMode.ARRIVE_BY && planned.timeSec != null) {
+            var results = withContext(Dispatchers.Default) {
+                val raw = if (planned.mode == TimeQueryMode.ARRIVE_BY && planned.timeSec != null) {
                     raptorEngine.searchArrivingByJourneys(
                         data = graph,
                         originStopId = originStopId,
@@ -146,7 +165,7 @@ class RouteResultsViewModel(
                         originLon = cachedOriginLon,
                         targetStopId = targetStopId,
                         arriveByTimeSec = planned.timeSec,
-                        tripDelays = realtimeRepository.tripDelaysSec,
+                        tripDelays = activeDelays,
                         tripSettings = settings,
                         limit = 5,
                         originName = originName,
@@ -162,7 +181,7 @@ class RouteResultsViewModel(
                         originLon = cachedOriginLon,
                         targetStopId = targetStopId,
                         departureTimeSec = queryTimeSec,
-                        tripDelays = realtimeRepository.tripDelaysSec,
+                        tripDelays = activeDelays,
                         tripSettings = settings,
                         limit = 5,
                         originName = originName,
@@ -170,6 +189,35 @@ class RouteResultsViewModel(
                         targetLon = targetAddr?.longitude,
                         targetName = targetAddr?.displayName
                     )
+                }
+                raw.map { shiftJourneyByDays(it, initialDayOffset) }
+            }
+
+            // Если на выбранный день рейсов уже нет (например, поздно ночью) — сразу подгружаем рейсы на следующий день с 00:00
+            if (results.isEmpty() && planned.mode == TimeQueryMode.DEPART_AT) {
+                val nextOffset = initialDayOffset + 1
+                val nextDate = today.plusDays(nextOffset.toLong())
+                val nextGraph = transitGraphRepository.buildGraphForDate(nextDate)
+                if (nextGraph != null) {
+                    loadedDayOffset = nextOffset
+                    activeDayGraph = nextGraph
+                    results = withContext(Dispatchers.Default) {
+                        raptorEngine.searchUpcomingJourneys(
+                            data = nextGraph,
+                            originStopId = originStopId,
+                            originLat = cachedOriginLat,
+                            originLon = cachedOriginLon,
+                            targetStopId = targetStopId,
+                            departureTimeSec = 0,
+                            tripDelays = emptyMap(),
+                            tripSettings = settings,
+                            limit = 5,
+                            originName = originName,
+                            targetLat = targetAddr?.latitude,
+                            targetLon = targetAddr?.longitude,
+                            targetName = targetAddr?.displayName
+                        ).map { shiftJourneyByDays(it, nextOffset) }
+                    }
                 }
             }
 
@@ -235,12 +283,13 @@ class RouteResultsViewModel(
 
     /**
      * Подгрузка следующих (более поздних) 5 рейсов при прокрутке/нажатии вниз.
+     * Если на сегодня рейсы закончились — автоматически загружает расписание следующего дня.
      */
     fun loadLaterJourneys() {
         val current = _uiState.value
         val request = activeRequest ?: return
         if (current.isLoading || current.isLoadingLater || current.noMoreLater) return
-        val graph = transitGraphRepository.graph.value ?: return
+        val currentGraph = activeDayGraph ?: transitGraphRepository.graph.value ?: return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingLater = true) }
@@ -252,15 +301,19 @@ class RouteResultsViewModel(
             val targetStopId = (request.to as? RouteEndpoint.Stop)?.group?.primaryStopId
             val targetAddr = request.to as? RouteEndpoint.Address
 
-            val later = withContext(Dispatchers.Default) {
+            val dayShiftSec = loadedDayOffset * 86_400
+            val localStartSec = (lastDepSec - dayShiftSec + 60).coerceAtLeast(0)
+            val delaysForDay = if (loadedDayOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
+
+            var later = withContext(Dispatchers.Default) {
                 raptorEngine.searchUpcomingJourneys(
-                    data = graph,
+                    data = currentGraph,
                     originStopId = originStopId,
                     originLat = cachedOriginLat,
                     originLon = cachedOriginLon,
                     targetStopId = targetStopId,
-                    departureTimeSec = lastDepSec + 60,
-                    tripDelays = realtimeRepository.tripDelaysSec,
+                    departureTimeSec = localStartSec,
+                    tripDelays = delaysForDay,
                     tripSettings = currentTripSettings,
                     limit = 5,
                     excludeIds = existingIds,
@@ -268,18 +321,75 @@ class RouteResultsViewModel(
                     targetLat = targetAddr?.latitude,
                     targetLon = targetAddr?.longitude,
                     targetName = targetAddr?.displayName
-                )
+                ).map { shiftJourneyByDays(it, loadedDayOffset) }
+            }
+
+            // Если рейсы на текущий день закончились — переходим к следующему дню (с 00:00)
+            if (later.isEmpty() && loadedDayOffset < maxDayOffset) {
+                val nextOffset = loadedDayOffset + 1
+                val nextDate = LocalDate.now(ZoneId.of("Europe/Warsaw")).plusDays(nextOffset.toLong())
+                val nextGraph = transitGraphRepository.buildGraphForDate(nextDate)
+                if (nextGraph != null) {
+                    loadedDayOffset = nextOffset
+                    activeDayGraph = nextGraph
+                    later = withContext(Dispatchers.Default) {
+                        raptorEngine.searchUpcomingJourneys(
+                            data = nextGraph,
+                            originStopId = originStopId,
+                            originLat = cachedOriginLat,
+                            originLon = cachedOriginLon,
+                            targetStopId = targetStopId,
+                            departureTimeSec = 0,
+                            tripDelays = emptyMap(),
+                            tripSettings = currentTripSettings,
+                            limit = 5,
+                            excludeIds = existingIds,
+                            originName = originName,
+                            targetLat = targetAddr?.latitude,
+                            targetLon = targetAddr?.longitude,
+                            targetName = targetAddr?.displayName
+                        ).map { shiftJourneyByDays(it, nextOffset) }
+                    }
+                }
             }
 
             _uiState.update { state ->
                 val merged = (state.journeys + later).distinctBy { it.id }
                 state.copy(
                     isLoadingLater = false,
-                    noMoreLater = later.isEmpty(),
+                    noMoreLater = later.isEmpty() && loadedDayOffset >= maxDayOffset,
                     journeys = merged
                 )
             }
         }
+    }
+
+    private fun shiftJourneyByDays(journey: TransitJourney, dayOffset: Int): TransitJourney {
+        if (dayOffset <= 0) return journey
+        val shift = dayOffset * 86_400
+        return journey.copy(
+            id = "d${dayOffset}_${journey.id}",
+            departureTimeSec = journey.departureTimeSec + shift,
+            arrivalTimeSec = journey.arrivalTimeSec + shift,
+            legs = journey.legs.map { leg ->
+                when (leg) {
+                    is JourneyLeg.WalkLeg -> leg.copy(
+                        startTimeSec = leg.startTimeSec + shift,
+                        endTimeSec = leg.endTimeSec + shift
+                    )
+                    is JourneyLeg.TransitLeg -> leg.copy(
+                        startTimeSec = leg.startTimeSec + shift,
+                        endTimeSec = leg.endTimeSec + shift,
+                        stops = leg.stops.map { stop ->
+                            stop.copy(
+                                scheduledTimeSec = stop.scheduledTimeSec + shift,
+                                effectiveTimeSec = stop.effectiveTimeSec + shift
+                            )
+                        }
+                    )
+                }
+            }
+        )
     }
 
     fun selectJourney(journey: TransitJourney) {

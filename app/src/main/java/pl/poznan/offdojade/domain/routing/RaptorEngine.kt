@@ -1150,7 +1150,10 @@ class RaptorEngine {
             val nextMarked = BooleanArray(stopCount)
             var targetBest = INF
             for (tIdx in targetStopIndices) {
-                if (bestArrival[tIdx] < targetBest) targetBest = bestArrival[tIdx]
+                if (bestArrival[tIdx] < INF) {
+                    val totalTargetArr = bestArrival[tIdx] + (query.targetEgressMap[tIdx]?.walkSeconds ?: 0)
+                    if (totalTargetArr < targetBest) targetBest = totalTargetArr
+                }
             }
 
             for (apIdx in 0 until activePatternCount) {
@@ -1189,7 +1192,10 @@ class RaptorEngine {
                             parentAlightPos[k][stop] = pos
                             nextMarked[stop] = true
                             if (isTargetStop[stop]) {
-                                targetBest = effectiveArr
+                                val totalTargetArr = effectiveArr + (query.targetEgressMap[stop]?.walkSeconds ?: 0)
+                                if (totalTargetArr < targetBest) {
+                                    targetBest = totalTargetArr
+                                }
                             }
                         }
                     }
@@ -1221,7 +1227,11 @@ class RaptorEngine {
                             } else {
                                 INF
                             }
-                            if (currentTrip == -1 || candDep < curDep) {
+                            val betterBoardOnSameTrip = candidateTrip == currentTrip && boardStop != -1 && (
+                                (parentType[k - 1][boardStop] == PARENT_FOOTPATH && parentType[k - 1][stop] != PARENT_FOOTPATH) ||
+                                    (parentWalkDist[k - 1][stop] < parentWalkDist[k - 1][boardStop])
+                                )
+                            if (currentTrip == -1 || candDep < curDep || betterBoardOnSameTrip) {
                                 currentTrip = candidateTrip
                                 currentTripDelay = candDelay
                                 boardStop = stop
@@ -1260,7 +1270,10 @@ class RaptorEngine {
                         parentWalkDist[k][toStop] = data.footpathDistanceMeters[f]
                         footpathUpdated[toStop] = true
                         if (isTargetStop[toStop]) {
-                            targetBest = walkArr
+                            val totalTargetArr = walkArr + (query.targetEgressMap[toStop]?.walkSeconds ?: 0)
+                            if (totalTargetArr < targetBest) {
+                                targetBest = totalTargetArr
+                            }
                         }
                     }
                 }
@@ -1308,7 +1321,8 @@ class RaptorEngine {
                     originAccessMap = originAccessMap,
                     searchDurationMs = elapsedMs,
                     alternativeTag = alternativeTag,
-                    isUlgowyTicket = tripSettings.isUlgowyTicket
+                    isUlgowyTicket = tripSettings.isUlgowyTicket,
+                    minTransferSec = minTransferSec
                 )
                 if (journey != null) {
                     journeys.add(journey)
@@ -1377,7 +1391,8 @@ class RaptorEngine {
         originAccessMap: Map<Int, OriginAccess>,
         searchDurationMs: Long,
         alternativeTag: JourneyAlternativeTag,
-        isUlgowyTicket: Boolean = false
+        isUlgowyTicket: Boolean = false,
+        minTransferSec: Int = MIN_SAME_STOP_TRANSFER_SEC
     ): TransitJourney? {
         val legsReversed = ArrayList<JourneyLeg>(round * 2 + 2)
         val egress = query.targetEgressMap[targetStopIdx]
@@ -1454,7 +1469,8 @@ class RaptorEngine {
                                 latitude = data.stopLats[sIdx],
                                 longitude = data.stopLons[sIdx],
                                 scheduledTimeSec = sched,
-                                effectiveTimeSec = sched + delaySec
+                                effectiveTimeSec = sched + delaySec,
+                                isOnDemand = data.tripIsOnDemandAt(tripIdx, pos)
                             )
                         )
                     }
@@ -1505,7 +1521,12 @@ class RaptorEngine {
         }
 
         if (legsReversed.isEmpty()) return null
-        val rawLegs = legsReversed.reversed()
+        val rawLegs = optimizeTransferAlighting(
+            data = data,
+            legs = legsReversed.reversed(),
+            tripDelays = tripDelays,
+            minTransferSec = minTransferSec
+        )
         val transitLegs = rawLegs.filterIsInstance<JourneyLeg.TransitLeg>()
         if (transitLegs.isEmpty()) return null
 
@@ -1569,6 +1590,116 @@ class RaptorEngine {
 
     private fun TransitJourney.tripSignature(): String =
         transitLegs.joinToString("|") { it.tripId }
+
+    /**
+     * Устраняет преждевременную высадку за 1–2 остановки до узла пересадки:
+     * если тот же рейс едет дальше к остановке, которая ближе к следующей посадке,
+     * и пассажир всё равно успевает на следующий рейс — продлеваем поездку до более близкой остановки.
+     */
+    private fun optimizeTransferAlighting(
+        data: RaptorData,
+        legs: List<JourneyLeg>,
+        tripDelays: Map<String, Int>,
+        minTransferSec: Int
+    ): List<JourneyLeg> {
+        if (legs.size < 3) return legs
+        val result = ArrayList<JourneyLeg>(legs.size)
+        var i = 0
+        while (i < legs.size) {
+            val current = legs[i]
+            val walk = legs.getOrNull(i + 1) as? JourneyLeg.WalkLeg
+            val nextTransit = legs.getOrNull(i + 2) as? JourneyLeg.TransitLeg
+
+            if (current is JourneyLeg.TransitLeg && walk != null && nextTransit != null && walk.distanceMeters > 15) {
+                val tripIdx = data.tripIds.indexOf(current.tripId)
+                if (tripIdx >= 0) {
+                    val patternIdx = data.tripPatternIndex[tripIdx]
+                    val pStopCount = data.patternStopCount(patternIdx)
+                    val curAlightStopId = current.alightingStop.stopId
+                    var curAlightPos = -1
+                    for (pos in 0 until pStopCount) {
+                        val sIdx = data.patternStopAt(patternIdx, pos)
+                        if (data.stopIds[sIdx] == curAlightStopId) {
+                            curAlightPos = pos
+                            break
+                        }
+                    }
+
+                    if (curAlightPos in 0 until pStopCount - 1) {
+                        val delaySec = tripDelays[current.tripId] ?: current.delaySeconds
+                        var bestPos = -1
+                        var bestDist = walk.distanceMeters
+                        var bestArrEff = 0
+                        var bestWalkSec = 0
+
+                        for (pos in (curAlightPos + 1) until pStopCount) {
+                            val sIdx = data.patternStopAt(patternIdx, pos)
+                            val dist = GeoUtils.haversineMeters(
+                                data.stopLats[sIdx], data.stopLons[sIdx],
+                                nextTransit.boardingStop.latitude, nextTransit.boardingStop.longitude
+                            ).roundToInt()
+                            if (dist + 25 >= bestDist) continue
+
+                            val arrEff = data.tripArrivalAt(tripIdx, pos) + delaySec
+                            val walkSec = if (dist <= 15) 0 else GeoUtils.walkingTimeSeconds(dist.toDouble())
+                            val neededTransfer = maxOf(walkSec, minTransferSec)
+                            if (arrEff + neededTransfer <= nextTransit.startTimeSec) {
+                                bestPos = pos
+                                bestDist = dist
+                                bestArrEff = arrEff
+                                bestWalkSec = walkSec
+                            }
+                        }
+
+                        if (bestPos > curAlightPos) {
+                            val extraStops = ArrayList<LegStop>(bestPos - curAlightPos)
+                            for (pos in (curAlightPos + 1)..bestPos) {
+                                val sIdx = data.patternStopAt(patternIdx, pos)
+                                val sched = data.tripArrivalAt(tripIdx, pos)
+                                extraStops.add(
+                                    LegStop(
+                                        stopId = data.stopIds[sIdx],
+                                        stopName = data.stopNames[sIdx],
+                                        platformCode = data.stopPlatforms[sIdx],
+                                        zoneId = data.stopZones[sIdx],
+                                        latitude = data.stopLats[sIdx],
+                                        longitude = data.stopLons[sIdx],
+                                        scheduledTimeSec = sched,
+                                        effectiveTimeSec = sched + delaySec,
+                                        isOnDemand = data.tripIsOnDemandAt(tripIdx, pos)
+                                    )
+                                )
+                            }
+                            val extendedTransit = current.copy(
+                                stops = current.stops + extraStops,
+                                endTimeSec = bestArrEff
+                            )
+                            result.add(extendedTransit)
+                            if (bestDist > 15) {
+                                val newStop = extraStops.last()
+                                result.add(
+                                    walk.copy(
+                                        fromName = newStop.stopName,
+                                        fromLat = newStop.latitude,
+                                        fromLon = newStop.longitude,
+                                        distanceMeters = bestDist,
+                                        startTimeSec = bestArrEff,
+                                        endTimeSec = bestArrEff + bestWalkSec
+                                    )
+                                )
+                            }
+                            i += 2
+                            continue
+                        }
+                    }
+                }
+            }
+
+            result.add(current)
+            i++
+        }
+        return result
+    }
 
     private fun isEveningOrNight(timeSec: Int): Boolean {
         val mod = ((timeSec % 86400) + 86400) % 86400

@@ -9,6 +9,7 @@ import pl.poznan.offdojade.data.gtfs.FootpathGenerator
 import pl.poznan.offdojade.data.local.entity.RouteEntity
 import pl.poznan.offdojade.data.local.entity.StopEntity
 import pl.poznan.offdojade.data.local.entity.StopTimeEntity
+import pl.poznan.offdojade.data.local.entity.TransferEntity
 import pl.poznan.offdojade.data.local.entity.TripEntity
 import pl.poznan.offdojade.domain.model.AppLanguage
 import pl.poznan.offdojade.domain.model.JourneyLeg
@@ -699,5 +700,134 @@ class RaptorEngineTest {
         assertTrue("Короткая поездка < 500 м должна находить транспорт", results.isNotEmpty())
         assertEquals(1, results.size)
         assertEquals("12", results.first().transitLegs.first().routeShortName)
+    }
+
+    @Test
+    fun neverWalksBackwardsToEarlierStopOfSameTrip_andNeverAlightsEarlyBeforeTransferHub() {
+        // Реальный сценарий со скриншота:
+        // 182: Śląska (22:35) -> Uniwersytet Przyrodniczy (22:36) -> Częstochowska (22:59) -> Górczyn PKM перрон 1 (23:01)
+        // 704: Górczyn PKM перрон 2 (23:10) -> Komorniki/Malinowa (23:23)
+        // Пассажир стартует на Uniwersytet Przyrodniczy: НЕ должен идти пешком назад 355 м на Śląska
+        // и НЕ должен выходить раньше на Częstochowska, чтобы идти 265 м до Górczyn PKM.
+        val stops = listOf(
+            StopEntity("SLA", "SLA", "Śląska", 52.4285, 16.9010, "A", "1"),
+            StopEntity("UPR", "UPR", "Uniwersytet Przyrodniczy", 52.4262, 16.9045, "A", "1"), // ~350 м от Śląska
+            StopEntity("CZE", "CZE", "Częstochowska", 52.3840, 16.8795, "A", "1"),
+            StopEntity("GOR1", "GOR1", "Górczyn PKM", 52.3822, 16.8780, "A", "1"), // перрон прибытия 182
+            StopEntity("GOR2", "GOR2", "Górczyn PKM", 52.3818, 16.8778, "A", "2"), // перрон отправления 704 (~46 м от GOR1, ~270 м от CZE)
+            StopEntity("KOM", "KOM", "Komorniki/Malinowa", 52.3400, 16.8100, "B", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R182", "ztm", "182", "182", 3, "1565C0", "FFFFFF"),
+            RouteEntity("R704", "ztm", "704", "704", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T182", "R182", "WK", "Górczyn PKM", 0, ""),
+            TripEntity("T704", "R704", "WK", "Komorniki", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T182", 1, "SLA", sec(22, 35), sec(22, 35)),
+            StopTimeEntity("T182", 2, "UPR", sec(22, 36), sec(22, 36)),
+            StopTimeEntity("T182", 3, "CZE", sec(22, 59), sec(22, 59), isOnDemand = 1),
+            StopTimeEntity("T182", 4, "GOR1", sec(23, 1), sec(23, 1)),
+
+            StopTimeEntity("T704", 1, "GOR2", sec(23, 10), sec(23, 10)),
+            StopTimeEntity("T704", 2, "KOM", sec(23, 23), sec(23, 23))
+        )
+        val transfers = listOf(
+            TransferEntity("CZE", "GOR2", 2, 220, 265), // 22:59 + 220s = 23:02:40 (на 20 сек раньше, чем через GOR1!)
+            TransferEntity("GOR1", "GOR2", 2, 120, 46)  // 23:01 + 120s = 23:03:00 (гораздо короче пешком!)
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, transfers)
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "UPR",
+            originLat = 52.4262,
+            originLon = 16.9045,
+            targetStopId = "KOM",
+            departureTimeSec = sec(22, 26),
+            limit = 5
+        )
+
+        assertTrue(results.isNotEmpty())
+        val journey = results.first()
+        val firstTransit = journey.transitLegs.first()
+        // 1. Посадка строго на Uniwersytet Przyrodniczy, без похода назад на Śląska!
+        assertEquals("Uniwersytet Przyrodniczy", firstTransit.boardingStop.stopName)
+        assertEquals(sec(22, 36), firstTransit.startTimeSec)
+        assertTrue(journey.legs.first() is pl.poznan.offdojade.domain.model.JourneyLeg.TransitLeg)
+        // 2. Высадка на Górczyn PKM, без преждевременного выхода на Częstochowska!
+        assertEquals("Górczyn PKM", firstTransit.alightingStop.stopName)
+        assertEquals(sec(23, 1), firstTransit.endTimeSec)
+        // 3. Флаг остановки по требованию (ПТ / NŻ) сохраняется для промежуточной остановки Częstochowska
+        assertTrue(firstTransit.stops.any { it.stopName == "Częstochowska" && it.isOnDemand })
+        assertFalse(firstTransit.boardingStop.isOnDemand)
+
+        // 4. Бинарный кэш RaptorDataCache сохраняет и восстанавливает граф без потерь
+        val tmpFile = java.io.File.createTempFile("raptor_cache_test", ".bin")
+        try {
+            RaptorDataCache.save(tmpFile, dbFingerprint = 123456L, data = graph)
+            val restored = RaptorDataCache.load(tmpFile, expectedDateYyyymmdd = 20261126, expectedDbFingerprint = 123456L)
+            assertNotNull(restored)
+            assertEquals(graph.stopCount, restored!!.stopCount)
+            assertEquals(graph.tripCount, restored.tripCount)
+            assertEquals(graph.arrivalTimesSec.size, restored.arrivalTimesSec.size)
+            val restoredResults = engine.searchUpcomingJourneys(
+                data = restored,
+                originStopId = "UPR",
+                originLat = 52.4262,
+                originLon = 16.9045,
+                targetStopId = "KOM",
+                departureTimeSec = sec(22, 26),
+                limit = 5
+            )
+            assertEquals(1, restoredResults.size)
+            assertTrue(restoredResults.first().transitLegs.first().stops.any { it.stopName == "Częstochowska" && it.isOnDemand })
+        } finally {
+            tmpFile.delete()
+        }
+    }
+
+    @Test
+    fun nearbyEgressStopBeforeDestination_doesNotPruneActualDestinationStop() {
+        // Автобус 182 едет: Start (08:00) -> Wojska Polskiego (08:15, 220м до цели) -> Uniwersytet Przyrodniczy (08:16, цель!)
+        // Раньше Wojska Polskiego попадала в targetEgressMap и обрезала targetBest=08:15 без учёта пешего времени,
+        // из-за чего Uniwersytet Przyrodniczy (08:16) отбрасывался и пользователя высаживали на 1 остановку раньше!
+        val stops = listOf(
+            StopEntity("S_START", "S1", "Górczyn PKM", 52.3820, 16.8780, "A", "1"),
+            StopEntity("S_PREV", "S2", "Wojska Polskiego", 52.4243, 16.9045, "A", "1"), // ~210 м до цели
+            StopEntity("S_DEST", "S3", "Uniwersytet Przyrodniczy", 52.4262, 16.9045, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R182", "ztm", "182", "182", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T182", "R182", "WK", "Uniwersytet Przyrodniczy", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T182", 1, "S_START", sec(8, 0), sec(8, 0)),
+            StopTimeEntity("T182", 2, "S_PREV", sec(8, 15), sec(8, 15)),
+            StopTimeEntity("T182", 3, "S_DEST", sec(8, 16), sec(8, 16))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "S_START",
+            originLat = 52.3820,
+            originLon = 16.8780,
+            targetStopId = "S_DEST",
+            departureTimeSec = sec(7, 55),
+            limit = 5
+        )
+
+        assertEquals(1, results.size)
+        val journey = results.first()
+        assertEquals("Uniwersytet Przyrodniczy", journey.transitLegs.last().alightingStop.stopName)
+        assertEquals(sec(8, 16), journey.arrivalTimeSec)
+        assertTrue(journey.legs.last() is pl.poznan.offdojade.domain.model.JourneyLeg.TransitLeg)
     }
 }

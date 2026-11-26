@@ -379,7 +379,8 @@ fun TicketRecommendationCard(
                 delayMinutes = ticket.delayMinutes,
                 totalStopsPassed = ticket.totalStopsPassed,
                 zones = ticket.zones.toSet(),
-                isUlgowy = showUlgowy
+                isUlgowy = showUlgowy,
+                pekaStopGroups = ticket.pekaStopGroups
             )
         }
     }

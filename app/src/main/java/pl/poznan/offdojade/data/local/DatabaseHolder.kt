@@ -27,13 +27,40 @@ class DatabaseHolder(private val context: Context) {
     val dao: GtfsDao
         get() = currentDb.gtfsDao()
 
+    val graphCacheFile: File
+        get() = File(context.cacheDir, "raptor_graph_v1.bin")
+
+    fun graphCacheFileForDate(dateYyyymmdd: Int): File =
+        File(context.cacheDir, "raptor_graph_v1_$dateYyyymmdd.bin")
+
+    fun clearGraphCaches() {
+        context.cacheDir.listFiles { f -> f.name.startsWith("raptor_graph_v1") }
+            ?.forEach { runCatching { it.delete() } }
+    }
+
+    fun pruneOldGraphCaches(keepDateYyyymmdd: Int) {
+        context.cacheDir.listFiles { f -> f.name.startsWith("raptor_graph_v1_") && f.name.endsWith(".bin") }
+            ?.forEach { file ->
+                val datePart = file.name.removePrefix("raptor_graph_v1_").removeSuffix(".bin").toIntOrNull()
+                if (datePart != null && datePart < keepDateYyyymmdd) {
+                    runCatching { file.delete() }
+                }
+            }
+    }
+
+    fun getDatabaseFingerprint(): Long {
+        val dbFile = context.getDatabasePath(AppConfig.DATABASE_NAME)
+        if (!dbFile.exists()) return 0L
+        return dbFile.length() * 31L + dbFile.lastModified()
+    }
+
     private fun buildDatabase(): GtfsDatabase =
         Room.databaseBuilder(
             context.applicationContext,
             GtfsDatabase::class.java,
             AppConfig.DATABASE_NAME
         )
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -51,6 +78,7 @@ class DatabaseHolder(private val context: Context) {
             File("${targetFile.absolutePath}-wal").delete()
             File("${targetFile.absolutePath}-shm").delete()
             File("${targetFile.absolutePath}-journal").delete()
+            clearGraphCaches()
 
             if (targetFile.exists() && !targetFile.delete()) {
                 throw IOException("Не удалось удалить старую базу ${targetFile.name}")
@@ -69,6 +97,14 @@ class DatabaseHolder(private val context: Context) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `trips` ADD COLUMN `wheelchair_accessible` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `stop_times` ADD COLUMN `is_on_demand` INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.poznan.offdojade.config.ZtmTariffConfig
 import pl.poznan.offdojade.domain.model.CheapestTicketChoice
+import pl.poznan.offdojade.domain.model.JourneyLeg
+import pl.poznan.offdojade.domain.model.LegStop
 
 class ZtmTicketCalculatorTest {
 
@@ -115,5 +117,59 @@ class ZtmTicketCalculatorTest {
         assertEquals(1.38, ulgowyShort.pekaCostPln, 0.001)
         assertEquals(2.00, ulgowyShort.recommendedTimeTicketPricePln, 0.001)
         assertEquals(CheapestTicketChoice.PEKA_TPORTMONETKA, ulgowyShort.cheapestChoice)
+    }
+
+    @Test
+    fun pekaTransferRule_continuesWithin20MinAndResetsOver20Min() {
+        fun makeLeg(id: String, stopCount: Int, startMin: Int, endMin: Int): JourneyLeg.TransitLeg {
+            val stops = (0..stopCount).map { idx ->
+                val t = (startMin + idx) * 60
+                LegStop("S_${id}_$idx", "Stop $idx", "1", "A", 52.4, 16.9, t, t)
+            }
+            return JourneyLeg.TransitLeg(
+                tripId = id,
+                routeShortName = id,
+                routeType = 3,
+                routeColorHex = null,
+                headsign = "Test",
+                shapeId = "",
+                delaySeconds = 0,
+                stops = stops,
+                startTimeSec = startMin * 60,
+                endTimeSec = endMin * 60
+            )
+        }
+
+        // Пересадка ровно 15 мин (<= 20 мин): 6 + 4 = 10 остановок в одном непрерывном тарифе = 4.38 zł
+        val continuous = ZtmTicketCalculator.calculateForLegs(
+            listOf(
+                makeLeg("L1", stopCount = 6, startMin = 600, endMin = 610),
+                makeLeg("L2", stopCount = 4, startMin = 625, endMin = 635)
+            ),
+            isUlgowy = false
+        )
+        assertEquals(listOf(10), continuous.pekaStopGroups)
+        assertEquals(4.38, continuous.pekaCostPln, 0.001)
+
+        // Пересадка 21 мин (> 20 мин): счётчик сбрасывается — 6 ост (3.18) + 4 ост (2.34) = 5.52 zł
+        val split = ZtmTicketCalculator.calculateForLegs(
+            listOf(
+                makeLeg("L1", stopCount = 6, startMin = 600, endMin = 610),
+                makeLeg("L2", stopCount = 4, startMin = 631, endMin = 641)
+            ),
+            isUlgowy = false
+        )
+        assertEquals(listOf(6, 4), split.pekaStopGroups)
+        assertEquals(5.52, split.pekaCostPln, 0.001)
+
+        // Льготный (Ulgowy 50%) для пересадки > 20 мин: 1.59 + 1.17 = 2.76 zł
+        val splitUlgowy = ZtmTicketCalculator.calculateForLegs(
+            listOf(
+                makeLeg("L1", stopCount = 6, startMin = 600, endMin = 610),
+                makeLeg("L2", stopCount = 4, startMin = 631, endMin = 641)
+            ),
+            isUlgowy = true
+        )
+        assertEquals(2.76, splitUlgowy.pekaCostPln, 0.001)
     }
 }

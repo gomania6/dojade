@@ -2,6 +2,9 @@ package pl.poznan.offdojade.ui.details
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -9,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import pl.poznan.offdojade.data.location.WalkingRouteProvider
 import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.data.realtime.LiveVehicle
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
@@ -71,7 +75,8 @@ data class RouteDetailsUiState(
 class RouteDetailsViewModel(
     private val transitGraphRepository: TransitGraphRepository,
     private val realtimeRepository: RealtimeRepository,
-    private val mapDownloader: MapDownloader
+    private val mapDownloader: MapDownloader,
+    private val walkingRouteProvider: WalkingRouteProvider
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RouteDetailsUiState())
@@ -180,6 +185,28 @@ class RouteDetailsViewModel(
                     legInsights = insights,
                     localMapFile = mapFile
                 )
+            }
+
+            // Параллельно достраиваем пешие участки по реальным дорогам/тротуарам (OSRM),
+            // с мгновенным сохранением прямой линии, если телефон офлайн
+            val walkLegs = journey?.legs
+                ?.filterIsInstance<JourneyLeg.WalkLeg>()
+                ?.filter { it.distanceMeters > 15 }
+                .orEmpty()
+            if (walkLegs.isNotEmpty()) {
+                val routedWalks = coroutineScope {
+                    walkLegs.map { leg ->
+                        async {
+                            walkingRouteProvider.getWalkingPolyline(
+                                fromLat = leg.fromLat,
+                                fromLon = leg.fromLon,
+                                toLat = leg.toLat,
+                                toLon = leg.toLon
+                            )
+                        }
+                    }.awaitAll()
+                }
+                _uiState.update { it.copy(walkPolylines = routedWalks) }
             }
         }
     }

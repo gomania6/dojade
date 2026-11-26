@@ -82,11 +82,10 @@ class LocationProvider(private val context: Context) {
         }
         return try {
             val last = fusedClient.lastLocation.await()
-            val isFreshEnough = last != null && (System.currentTimeMillis() - last.time) < 60_000L
-            if (isFreshEnough && last != null) {
+            if (last != null && (System.currentTimeMillis() - last.time) < 180_000L) {
                 UserLocation(last.latitude, last.longitude, isFallbackCenter = false)
             } else {
-                val fresh = withTimeoutOrNull(3_000L) {
+                val fresh = withTimeoutOrNull(1_200L) {
                     val cts = CancellationTokenSource()
                     fusedClient.getCurrentLocation(
                         Priority.PRIORITY_BALANCED_POWER_ACCURACY,

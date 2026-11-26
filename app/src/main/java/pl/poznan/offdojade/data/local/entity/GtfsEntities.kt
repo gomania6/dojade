@@ -116,7 +116,9 @@ data class StopTimeEntity(
     @ColumnInfo(name = "stop_id") val stopId: String,
     /** Секунды от начала суток (может быть >= 86400 для ночных рейсов после полуночи) */
     @ColumnInfo(name = "arrival_time_sec") val arrivalTimeSec: Int,
-    @ColumnInfo(name = "departure_time_sec") val departureTimeSec: Int
+    @ColumnInfo(name = "departure_time_sec") val departureTimeSec: Int,
+    /** 1 = остановка по требованию (GTFS pickup_type = 3 или drop_off_type = 3) */
+    @ColumnInfo(name = "is_on_demand", defaultValue = "0") val isOnDemand: Int = 0
 )
 
 @Entity(

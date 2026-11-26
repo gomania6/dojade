@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -82,9 +83,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -93,6 +96,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -130,6 +134,7 @@ import pl.poznan.offdojade.ui.components.TicketRecommendationCard
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
+import pl.poznan.offdojade.ui.theme.DelayAmber
 import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
 import pl.poznan.offdojade.ui.theme.LiveGreen
@@ -144,6 +149,15 @@ private data class SelectedVehiclePopup(
     val isTram: Boolean,
     val delaySeconds: Int,
     val lastUpdatedEpochMs: Long,
+    val colorHex: String
+)
+
+private data class SelectedStopPopup(
+    val stopName: String,
+    val timeText: String,
+    val routeName: String,
+    val zoneId: String,
+    val isOnDemand: Boolean,
     val colorHex: String
 )
 
@@ -224,6 +238,7 @@ fun RouteDetailsScreen(
     // Панель таймлайна справа: true = раскрыта (~90%), false = свёрнута (~88dp, открыта карта)
     var isPanelExpanded by remember { mutableStateOf(true) }
     var selectedVehicle by remember { mutableStateOf<SelectedVehiclePopup?>(null) }
+    var selectedStop by remember { mutableStateOf<SelectedStopPopup?>(null) }
 
     val fallbackFeedUpdatedMs = (realtimeStatus as? RealtimeStatus.Live)?.lastUpdatedEpochMs
         ?: System.currentTimeMillis()
@@ -292,11 +307,14 @@ fun RouteDetailsScreen(
                 .padding(padding)
         ) {
             val totalWidth = maxWidth
-            val panelWidth by animateDpAsState(
-                targetValue = if (isPanelExpanded) totalWidth * 0.90f else 88.dp,
-                animationSpec = tween(durationMillis = 240),
-                label = "detailsPanelWidth"
+            val expandedWidth = totalWidth * 0.90f
+            val collapsedWidth = 88.dp
+            val expandFraction by animateFloatAsState(
+                targetValue = if (isPanelExpanded) 1f else 0f,
+                animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                label = "detailsPanelFraction"
             )
+            val panelWidth = lerp(collapsedWidth, expandedWidth, expandFraction)
 
             // 1. Полноэкранная карта MapLibre на заднем плане
             OfflineRouteMapView(
@@ -308,7 +326,14 @@ fun RouteDetailsScreen(
                 liveVehicles = liveVehicles,
                 fallbackFeedUpdatedMs = fallbackFeedUpdatedMs,
                 getTripDelaySec = viewModel::getTripDelaySeconds,
-                onVehicleClicked = { popup -> selectedVehicle = popup },
+                onVehicleClicked = { popup ->
+                    selectedVehicle = popup
+                    if (popup != null) selectedStop = null
+                },
+                onStopClicked = { stopPopup ->
+                    selectedStop = stopPopup
+                    if (stopPopup != null) selectedVehicle = null
+                },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -354,14 +379,33 @@ fun RouteDetailsScreen(
                         )
                     }
                 }
+
+                // Всплывающая карточка при нажатии на кружок остановки на карте
+                AnimatedVisibility(
+                    visible = selectedStop != null && selectedVehicle == null,
+                    enter = slideInVertically(tween(220, easing = FastOutSlowInEasing)) { it / 2 } + fadeIn(tween(200)),
+                    exit = slideOutVertically(tween(180, easing = FastOutSlowInEasing)) { it / 2 } + fadeOut(tween(160)),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = 14.dp, end = 100.dp)
+                ) {
+                    val stopPopup = selectedStop
+                    if (stopPopup != null) {
+                        StopInfoPopupCard(
+                            popup = stopPopup,
+                            onDismiss = { selectedStop = null }
+                        )
+                    }
+                }
             }
 
-            // 2. Выдвижная правая панель таймлайна
+            // 2. Выдвижная правая панель таймлайна (без перелома текста при открытии/закрытии)
             Surface(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .width(panelWidth)
                     .fillMaxHeight()
+                    .clipToBounds()
                     .pointerInput(isPanelExpanded) {
                         var dragAccum = 0f
                         detectHorizontalDragGestures(
@@ -382,25 +426,39 @@ fun RouteDetailsScreen(
                 shadowElevation = 10.dp,
                 border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                AnimatedContent(
-                    targetState = isPanelExpanded,
-                    transitionSpec = {
-                        fadeIn(tween(200, easing = FastOutSlowInEasing)) togetherWith
-                            fadeOut(tween(150, easing = FastOutSlowInEasing))
-                    },
-                    label = "timelinePanelContent"
-                ) { expanded ->
-                    if (expanded) {
-                        ExpandedTimelinePanel(
-                            journey = journey,
-                            items = timelineItems,
-                            legInsights = state.legInsights
-                        )
-                    } else {
-                        CollapsedTimelineRail(
-                            items = timelineItems,
-                            onExpand = { isPanelExpanded = true }
-                        )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (expandFraction > 0.02f) {
+                        Box(
+                            modifier = Modifier
+                                .requiredWidth(expandedWidth)
+                                .fillMaxHeight()
+                                .align(Alignment.CenterStart)
+                                .graphicsLayer {
+                                    alpha = ((expandFraction - 0.12f) / 0.88f).coerceIn(0f, 1f)
+                                }
+                        ) {
+                            ExpandedTimelinePanel(
+                                journey = journey,
+                                items = timelineItems,
+                                legInsights = state.legInsights
+                            )
+                        }
+                    }
+                    if (expandFraction < 0.98f) {
+                        Box(
+                            modifier = Modifier
+                                .requiredWidth(collapsedWidth)
+                                .fillMaxHeight()
+                                .align(Alignment.CenterStart)
+                                .graphicsLayer {
+                                    alpha = (1f - expandFraction * 2.2f).coerceIn(0f, 1f)
+                                }
+                        ) {
+                            CollapsedTimelineRail(
+                                items = timelineItems,
+                                onExpand = { isPanelExpanded = true }
+                            )
+                        }
                     }
                 }
             }
@@ -932,7 +990,6 @@ private fun JakdojadeTransitLegBlock(
     )
 
     Column(
-        modifier = Modifier.animateContentSize(animationSpec = tween(420, easing = FastOutSlowInEasing)),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         // 1. Остановка посадки (непрерывная линия цвета сегмента уходит вниз без разрыва)
@@ -976,11 +1033,23 @@ private fun JakdojadeTransitLegBlock(
                     .weight(1f)
                     .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = leg.boardingStop.stopName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ZoneCircleBadge(zoneId = leg.boardingStop.zoneId)
+                    if (leg.boardingStop.isOnDemand) {
+                        OnDemandBadge()
+                    }
+                    Text(
+                        text = leg.boardingStop.stopName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
                 Text(
                     text = depStatusText,
                     style = MaterialTheme.typography.labelMedium,
@@ -1130,36 +1199,117 @@ private fun JakdojadeTransitLegBlock(
                         )
                     }
                 }
+            }
+        }
 
-                AnimatedVisibility(
-                    visible = expanded && leg.stops.size > 2,
-                    enter = expandVertically(tween(420, easing = FastOutSlowInEasing)) + fadeIn(tween(380)),
-                    exit = shrinkVertically(tween(360, easing = FastOutSlowInEasing)) + fadeOut(tween(280))
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        leg.stops.subList(1, leg.stops.lastIndex).forEach { midStop ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // 2б. Плавное раскрытие/сворачивание промежуточных остановок в стиле Jakdojade (время слева, номер + зона B/C/D + ПТ + название)
+        AnimatedVisibility(
+            visible = expanded && leg.stops.size > 2,
+            enter = expandVertically(
+                animationSpec = tween(380, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Top
+            ) + fadeIn(tween(300)),
+            exit = shrinkVertically(
+                animationSpec = tween(380, easing = FastOutSlowInEasing),
+                shrinkTowards = Alignment.Top
+            ) + fadeOut(tween(240))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                leg.stops.subList(1, leg.stops.lastIndex).forEachIndexed { idx, midStop ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(74.dp)
+                                .fillMaxHeight(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(accent)
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.surface
                             ) {
                                 Text(
                                     text = TimeFormatUtils.formatClock(midStop.effectiveTimeSec),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = midStop.stopName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                 )
                             }
                         }
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "${idx + 1}.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            ZoneCircleBadge(zoneId = midStop.zoneId)
+                            if (midStop.isOnDemand) {
+                                OnDemandBadge()
+                            }
+                            Text(
+                                text = midStop.stopName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
+        }
+
+        // Разделитель перед остановкой высадки с непрерывной линией слева
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(74.dp)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .fillMaxHeight()
+                        .defaultMinSize(minHeight = 10.dp)
+                        .background(accent)
+                )
+            }
+            HorizontalDivider(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(bottom = 8.dp),
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
         }
 
         // 3. Остановка высадки (пунктир к пересадке начинается сразу под капсулой времени без зазора)
@@ -1210,11 +1360,23 @@ private fun JakdojadeTransitLegBlock(
                     .weight(1f)
                     .padding(bottom = if (nextWalkOrWait != null) 4.dp else 0.dp)
             ) {
-                Text(
-                    text = leg.alightingStop.stopName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ZoneCircleBadge(zoneId = leg.alightingStop.zoneId)
+                    if (leg.alightingStop.isOnDemand) {
+                        OnDemandBadge()
+                    }
+                    Text(
+                        text = leg.alightingStop.stopName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
                 val meta = buildList {
                     if (leg.alightingStop.platformCode.isNotBlank()) add("${s.platformPrefix} ${leg.alightingStop.platformCode}")
                     if (leg.alightingStop.zoneId.isNotBlank()) add("${s.zonePrefix} ${leg.alightingStop.zoneId}")
@@ -1226,6 +1388,136 @@ private fun JakdojadeTransitLegBlock(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Круглый бейдж тарифной зоны (B / C / D) в стиле Jakdojade.
+ * Зона A не отображается таким кружком.
+ */
+@Composable
+private fun ZoneCircleBadge(zoneId: String) {
+    val zone = zoneId.trim().uppercase()
+    val bgColor = when (zone) {
+        "B" -> Color(0xFF4EC28E)
+        "C" -> Color(0xFF5AA8DB)
+        "D" -> Color(0xFFE0A458)
+        else -> return
+    }
+    Box(
+        modifier = Modifier
+            .size(21.dp)
+            .clip(CircleShape)
+            .background(bgColor),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = zone,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF0E1612)
+        )
+    }
+}
+
+/**
+ * Круглый бейдж остановки по требованию (ПТ / NŻ — Przystanek na żądanie) в стиле Jakdojade.
+ */
+@Composable
+private fun OnDemandBadge() {
+    val s = LocalStrings.current
+    Box(
+        modifier = Modifier
+            .size(21.dp)
+            .clip(CircleShape)
+            .background(Color(0xFFD5D9E0)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = s.onDemandBadge,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF1A1E26),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun StopInfoPopupCard(
+    popup: SelectedStopPopup,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val s = LocalStrings.current
+    val accent = parseHexColor(popup.colorHex)
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.7f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(accent)
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ZoneCircleBadge(zoneId = popup.zoneId)
+                    if (popup.isOnDemand) {
+                        OnDemandBadge()
+                    }
+                    Text(
+                        text = popup.stopName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
+                Text(
+                    text = "${popup.routeName} • ${popup.timeText}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = s.close,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }
@@ -1263,11 +1555,13 @@ private fun OfflineRouteMapView(
     fallbackFeedUpdatedMs: Long,
     getTripDelaySec: (String?) -> Int?,
     onVehicleClicked: (SelectedVehiclePopup?) -> Unit,
+    onStopClicked: (SelectedStopPopup?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val latestOnVehicleClicked by rememberUpdatedState(onVehicleClicked)
+    val latestOnStopClicked by rememberUpdatedState(onStopClicked)
 
     val mapView = remember {
         MapView(context).apply { onCreate(null) }
@@ -1311,14 +1605,20 @@ private fun OfflineRouteMapView(
                     clickListenerAttached = true
                     map.addOnMapClickListener { latLng ->
                         val screenPt = map.projection.toScreenLocation(latLng)
-                        val hit = map.queryRenderedFeatures(screenPt, LAYER_LIVE_VEHICLES).firstOrNull()
-                        if (hit != null) {
-                            val label = hit.getStringProperty("label") ?: "ZTM"
-                            val isTram = hit.getBooleanProperty("isTram") ?: false
-                            val delaySec = hit.getNumberProperty("delaySec")?.toInt() ?: 0
-                            val updatedMs = hit.getNumberProperty("updatedMs")?.toLong()
+                        val hitBox = RectF(
+                            screenPt.x - 28f,
+                            screenPt.y - 28f,
+                            screenPt.x + 28f,
+                            screenPt.y + 28f
+                        )
+                        val vehicleHit = map.queryRenderedFeatures(hitBox, LAYER_LIVE_VEHICLES).firstOrNull()
+                        if (vehicleHit != null) {
+                            val label = vehicleHit.getStringProperty("label") ?: "ZTM"
+                            val isTram = vehicleHit.getBooleanProperty("isTram") ?: false
+                            val delaySec = vehicleHit.getNumberProperty("delaySec")?.toInt() ?: 0
+                            val updatedMs = vehicleHit.getNumberProperty("updatedMs")?.toLong()
                                 ?: System.currentTimeMillis()
-                            val colorHex = hit.getStringProperty("colorHex") ?: "#2563EB"
+                            val colorHex = vehicleHit.getStringProperty("colorHex") ?: "#4B83C3"
                             latestOnVehicleClicked(
                                 SelectedVehiclePopup(
                                     label = label,
@@ -1328,11 +1628,28 @@ private fun OfflineRouteMapView(
                                     colorHex = colorHex
                                 )
                             )
-                            true
-                        } else {
-                            latestOnVehicleClicked(null)
-                            false
+                            return@addOnMapClickListener true
                         }
+                        val stopHit = map.queryRenderedFeatures(hitBox, LAYER_ROUTE_STOPS).firstOrNull()
+                        if (stopHit != null) {
+                            val stopName = stopHit.getStringProperty("name") ?: ""
+                            if (stopName.isNotBlank()) {
+                                latestOnStopClicked(
+                                    SelectedStopPopup(
+                                        stopName = stopName,
+                                        timeText = stopHit.getStringProperty("time") ?: "",
+                                        routeName = stopHit.getStringProperty("routeName") ?: "",
+                                        zoneId = stopHit.getStringProperty("zone") ?: "A",
+                                        isOnDemand = stopHit.getBooleanProperty("isOnDemand") ?: false,
+                                        colorHex = stopHit.getStringProperty("color") ?: "#3FA372"
+                                    )
+                                )
+                                return@addOnMapClickListener true
+                            }
+                        }
+                        latestOnVehicleClicked(null)
+                        latestOnStopClicked(null)
+                        false
                     }
                 }
 
@@ -1455,7 +1772,7 @@ private fun renderRouteOverlay(
         )
     }
 
-    // 4. Точки остановок маршрута (обводка цветом сегмента)
+    // 4. Точки остановок маршрута (обводка цветом сегмента + метаданные для клика по остановке)
     val stopFeatures = journey.transitLegs.flatMapIndexed { legIdx, leg ->
         val colorHex = RouteLegColors.hexForLeg(
             transitLegIndex = legIdx,
@@ -1465,6 +1782,11 @@ private fun renderRouteOverlay(
         leg.stops.map { stop ->
             Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
                 addStringProperty("color", colorHex)
+                addStringProperty("name", stop.stopName)
+                addStringProperty("time", TimeFormatUtils.formatClock(stop.effectiveTimeSec))
+                addStringProperty("routeName", leg.routeShortName)
+                addStringProperty("zone", stop.zoneId)
+                addBooleanProperty("isOnDemand", stop.isOnDemand)
             }
         }
     }

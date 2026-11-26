@@ -44,6 +44,29 @@ object ZtmTicketCalculator {
 
         val totalStopsPassed = transitLegs.sumOf { it.stopsPassed }
 
+        // Группируем остановки по правилу PEKA tPortmonetka:
+        // пересадка <= 20 мин (и до 3 пересадок) продолжает дегрессивный тариф;
+        // если пересадка > 20 мин — начинается новый отсчёт с 1-й остановки.
+        val pekaStopGroups = ArrayList<Int>(transitLegs.size)
+        var currentGroupStops = transitLegs.first().stopsPassed
+        var transfersInGroup = 0
+        for (i in 1 until transitLegs.size) {
+            val prevLeg = transitLegs[i - 1]
+            val curLeg = transitLegs[i]
+            val transferGapSec = (curLeg.startTimeSec - prevLeg.endTimeSec).coerceAtLeast(0)
+            if (transferGapSec <= ZtmTariffConfig.PEKA_MAX_TRANSFER_WINDOW_SEC &&
+                transfersInGroup < ZtmTariffConfig.PEKA_MAX_CONTINUOUS_TRANSFERS
+            ) {
+                currentGroupStops += curLeg.stopsPassed
+                transfersInGroup++
+            } else {
+                pekaStopGroups.add(currentGroupStops)
+                currentGroupStops = curLeg.stopsPassed
+                transfersInGroup = 0
+            }
+        }
+        pekaStopGroups.add(currentGroupStops)
+
         val zones = linkedSetOf<String>()
         for (leg in transitLegs) {
             for (stop in leg.stops) {
@@ -57,7 +80,8 @@ object ZtmTicketCalculator {
             delayMinutes = delayMinutes,
             totalStopsPassed = totalStopsPassed,
             zones = zones.ifEmpty { setOf("A") },
-            isUlgowy = isUlgowy
+            isUlgowy = isUlgowy,
+            pekaStopGroups = pekaStopGroups
         )
     }
 
@@ -66,7 +90,8 @@ object ZtmTicketCalculator {
         delayMinutes: Int,
         totalStopsPassed: Int,
         zones: Set<String>,
-        isUlgowy: Boolean = false
+        isUlgowy: Boolean = false,
+        pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList()
     ): TicketRecommendation {
         val safePure = pureTransitMinutes.coerceAtLeast(0)
         val safeDelay = delayMinutes.coerceAtLeast(0)
@@ -87,7 +112,10 @@ object ZtmTicketCalculator {
             null
         }
 
-        val pekaCost = ZtmTariffConfig.calculatePekaCostPln(totalStopsPassed, isUlgowy = isUlgowy)
+        val effectiveGroups = pekaStopGroups.ifEmpty {
+            if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList()
+        }
+        val pekaCost = ZtmTariffConfig.calculatePekaCostForGroupsPln(effectiveGroups, isUlgowy = isUlgowy)
         val diff = round((recommendedPrice - pekaCost) * 100.0) / 100.0
         val cheapest = when {
             totalStopsPassed <= 0 -> CheapestTicketChoice.TIME_TICKET
@@ -115,7 +143,8 @@ object ZtmTicketCalculator {
             savingsPln = round(abs(diff) * 100.0) / 100.0,
             zones = sortedZones.ifEmpty { listOf("A") },
             isUlgowy = isUlgowy,
-            recommendedTimeTicketPricePln = recommendedPrice
+            recommendedTimeTicketPricePln = recommendedPrice,
+            pekaStopGroups = effectiveGroups
         )
     }
 

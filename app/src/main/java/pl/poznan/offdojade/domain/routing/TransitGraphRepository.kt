@@ -46,6 +46,9 @@ class TransitGraphRepository(
     @Volatile
     private var cachedStopGroups: List<StopGroup>? = null
 
+    @Volatile
+    private var cachedAlternateDayGraph: Pair<Int, RaptorData>? = null
+
     fun selectJourney(journey: TransitJourney) {
         _selectedJourney.value = journey
     }
@@ -59,27 +62,129 @@ class TransitGraphRepository(
     }
 
     suspend fun ensureLoadedForToday(): RaptorData? {
-        val todayInt = ServiceCalendarResolver.toYyyymmdd(LocalDate.now())
+        val today = LocalDate.now()
+        val todayInt = ServiceCalendarResolver.toYyyymmdd(today)
         val existing = _graph.value
         if (existing != null && existing.serviceDateYyyymmdd == todayInt && existing.stopCount > 0) {
             return existing
         }
-        return reloadForDate(LocalDate.now())
+        return loadOrRebuildForDate(date = today, forceRebuild = false)
     }
 
-    suspend fun reloadForToday(): RaptorData? = reloadForDate(LocalDate.now())
+    suspend fun reloadForToday(): RaptorData? = loadOrRebuildForDate(date = LocalDate.now(), forceRebuild = true)
 
-    suspend fun reloadForDate(date: LocalDate): RaptorData? = mutex.withLock {
+    /**
+     * Строит (и кэширует) граф RAPTOR на произвольную дату (например, на завтра),
+     * не перезаписывая текущий граф сегодняшнего дня.
+     */
+    suspend fun buildGraphForDate(date: LocalDate): RaptorData? = mutex.withLock {
+        val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
+        val todayGraph = _graph.value
+        if (todayGraph != null && todayGraph.serviceDateYyyymmdd == dateInt) {
+            return@withLock todayGraph
+        }
+        cachedAlternateDayGraph?.let { (cachedDate, cachedGraph) ->
+            if (cachedDate == dateInt) return@withLock cachedGraph
+        }
+        withContext(Dispatchers.Default) {
+            // 1. Быстрая загрузка из бинарного кэша на диске (~50–120 мс)
+            val dbFingerprint = databaseHolder.getDatabaseFingerprint()
+            val cacheFile = databaseHolder.graphCacheFileForDate(dateInt)
+            if (dbFingerprint != 0L) {
+                val cached = RaptorDataCache.load(
+                    file = cacheFile,
+                    expectedDateYyyymmdd = dateInt,
+                    expectedDbFingerprint = dbFingerprint
+                )
+                if (cached != null && cached.stopCount > 0) {
+                    cachedAlternateDayGraph = dateInt to cached
+                    return@withContext cached
+                }
+            }
+
+            // 2. Сборка из Room SQLite и сохранение в бинарный кэш для будущих запросов
+            val stops = dao.getAllStops()
+            if (stops.isEmpty()) return@withContext null
+            val calendars = dao.getAllCalendars()
+            val calendarDates = dao.getCalendarDatesForDate(dateInt)
+            val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
+                date = date,
+                calendars = calendars,
+                calendarDatesForDate = calendarDates
+            )
+            val routes = dao.getAllRoutes()
+            val transfers = dao.getAllTransfers()
+            val serviceIdsToLoad = if (activeServices.isNotEmpty()) {
+                activeServices.toList()
+            } else {
+                calendars
+                    .filter { cal -> matchesDayOfWeek(cal, date.dayOfWeek) }
+                    .map { it.serviceId }
+                    .distinct()
+            }
+            val trips = serviceIdsToLoad.chunked(500).flatMap { chunk ->
+                dao.getTripsForServices(chunk)
+            }
+            val stopTimes = serviceIdsToLoad.chunked(500).flatMap { chunk ->
+                dao.getStopTimesForServices(chunk)
+            }
+            val built = TransitGraphBuilder.build(
+                serviceDateYyyymmdd = dateInt,
+                stops = stops,
+                routes = routes,
+                trips = trips,
+                stopTimes = stopTimes,
+                transfers = transfers
+            )
+            cachedAlternateDayGraph = dateInt to built
+            if (dbFingerprint != 0L && built.stopCount > 0) {
+                RaptorDataCache.save(cacheFile, dbFingerprint, built)
+            }
+            built
+        }
+    }
+
+    suspend fun reloadForDate(date: LocalDate): RaptorData? =
+        loadOrRebuildForDate(date = date, forceRebuild = true)
+
+    private suspend fun loadOrRebuildForDate(date: LocalDate, forceRebuild: Boolean): RaptorData? = mutex.withLock {
+        val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
+        // Повторная проверка ВНУТРИ mutex: если другой поток (App / Activity / HomeVM) уже загрузил граф,
+        // не пересобираем его повторно!
+        if (!forceRebuild) {
+            val existing = _graph.value
+            if (existing != null && existing.serviceDateYyyymmdd == dateInt && existing.stopCount > 0) {
+                return@withLock existing
+            }
+        }
+
         withContext(Dispatchers.Default) {
             _isLoading.value = true
             try {
+                // 1. Сверхбыстрый путь: бинарный кэш графа на диске (~50–120 мс вместо 4–6 сек из SQLite)
+                val dbFingerprint = databaseHolder.getDatabaseFingerprint()
+                val cacheFile = databaseHolder.graphCacheFileForDate(dateInt)
+                if (!forceRebuild && dbFingerprint != 0L) {
+                    val cached = RaptorDataCache.load(
+                        file = cacheFile,
+                        expectedDateYyyymmdd = dateInt,
+                        expectedDbFingerprint = dbFingerprint
+                    )
+                    if (cached != null && cached.stopCount > 0) {
+                        cachedStopGroups = groupStopsFromRaptorData(cached)
+                        _graph.value = cached
+                        databaseHolder.pruneOldGraphCaches(dateInt)
+                        return@withContext cached
+                    }
+                }
+
+                // 2. Полная сборка из Room SQLite (при первом запуске или после обновления расписания)
                 val stops = dao.getAllStops()
                 if (stops.isEmpty()) {
                     cachedStopGroups = null
                     _graph.value = null
                     return@withContext null
                 }
-                val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
                 val calendars = dao.getAllCalendars()
                 val calendarDates = dao.getCalendarDatesForDate(dateInt)
                 val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
@@ -118,12 +223,50 @@ class TransitGraphRepository(
                     transfers = transfers
                 )
                 cachedStopGroups = groupStopsByName(stops)
+                cachedAlternateDayGraph = null
                 _graph.value = built
+
+                // Сохраняем бинарный кэш на диск для мгновенного следующего запуска
+                if (dbFingerprint != 0L && built.stopCount > 0) {
+                    RaptorDataCache.save(cacheFile, dbFingerprint, built)
+                    databaseHolder.pruneOldGraphCaches(dateInt)
+                }
                 built
             } finally {
                 _isLoading.value = false
             }
         }
+    }
+
+    private fun groupStopsFromRaptorData(data: RaptorData): List<StopGroup> {
+        val byName = LinkedHashMap<String, MutableList<Int>>(data.stopCount / 2 + 1)
+        for (i in 0 until data.stopCount) {
+            val key = RaptorData.normalizeStopName(data.stopNames[i])
+            byName.getOrPut(key) { ArrayList(2) }.add(i)
+        }
+        return byName.values.map { indices ->
+            val first = indices.first()
+            var sumLat = 0.0
+            var sumLon = 0.0
+            val zones = LinkedHashSet<String>(2)
+            val ids = ArrayList<String>(indices.size)
+            for (idx in indices) {
+                sumLat += data.stopLats[idx]
+                sumLon += data.stopLons[idx]
+                val z = data.stopZones[idx].trim().uppercase()
+                if (z.isNotEmpty()) zones.add(z)
+                ids.add(data.stopIds[idx])
+            }
+            StopGroup(
+                displayName = data.stopNames[first],
+                primaryStopId = data.stopIds[first],
+                stopIds = ids,
+                zones = zones.sorted().ifEmpty { listOf("A") },
+                platformCount = indices.size,
+                latitude = sumLat / indices.size,
+                longitude = sumLon / indices.size
+            )
+        }.sortedBy { it.displayName }
     }
 
     suspend fun searchStops(query: String, limit: Int = 25): List<StopEntity> =

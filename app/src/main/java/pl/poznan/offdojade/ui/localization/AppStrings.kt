@@ -180,6 +180,11 @@ data class AppStrings(
     // History
     val tripHistoryTitle: String,
     val recentStopsTitle: String,
+    val addressesSectionTitle: String,
+    val onDemandBadge: String,
+    val todayLabel: String,
+    val tomorrowLabel: String,
+    val dayAfterTomorrowLabel: String,
     val clearHistory: String,
 
     // Ulgowy ticket
@@ -424,6 +429,11 @@ private val RussianStrings = AppStrings(
 
     tripHistoryTitle = "История поездок",
     recentStopsTitle = "Недавние остановки",
+    addressesSectionTitle = "Адреса",
+    onDemandBadge = "ПТ",
+    todayLabel = "Сегодня",
+    tomorrowLabel = "Завтра",
+    dayAfterTomorrowLabel = "Послезавтра",
     clearHistory = "Очистить",
 
     ulgowyTicketTitle = "Льготный билет (Ulgowy 50%)",
@@ -626,6 +636,11 @@ private val UkrainianStrings = AppStrings(
 
     tripHistoryTitle = "Історія поїздок",
     recentStopsTitle = "Нещодавні зупинки",
+    addressesSectionTitle = "Адреси",
+    onDemandBadge = "ПВ",
+    todayLabel = "Сьогодні",
+    tomorrowLabel = "Завтра",
+    dayAfterTomorrowLabel = "Післязавтра",
     clearHistory = "Очистити",
 
     ulgowyTicketTitle = "Пільговий квиток (Ulgowy 50%)",
@@ -828,6 +843,11 @@ private val PolishStrings = AppStrings(
 
     tripHistoryTitle = "Historia podróży",
     recentStopsTitle = "Ostatnie przystanki",
+    addressesSectionTitle = "Adresy",
+    onDemandBadge = "NŻ",
+    todayLabel = "Dziś",
+    tomorrowLabel = "Jutro",
+    dayAfterTomorrowLabel = "Pojutrze",
     clearHistory = "Wyczyść",
 
     ulgowyTicketTitle = "Bilet ulgowy (50%)",
@@ -1030,6 +1050,11 @@ private val EnglishStrings = AppStrings(
 
     tripHistoryTitle = "Trip history",
     recentStopsTitle = "Recent stops",
+    addressesSectionTitle = "Addresses",
+    onDemandBadge = "REQ",
+    todayLabel = "Today",
+    tomorrowLabel = "Tomorrow",
+    dayAfterTomorrowLabel = "In 2 days",
     clearHistory = "Clear",
 
     ulgowyTicketTitle = "Reduced ticket (Ulgowy 50%)",
@@ -1232,6 +1257,11 @@ private val GermanStrings = AppStrings(
 
     tripHistoryTitle = "Fahrtverlauf",
     recentStopsTitle = "Letzte Haltestellen",
+    addressesSectionTitle = "Adressen",
+    onDemandBadge = "BH",
+    todayLabel = "Heute",
+    tomorrowLabel = "Morgen",
+    dayAfterTomorrowLabel = "Übermorgen",
     clearHistory = "Löschen",
 
     ulgowyTicketTitle = "Ermäßigtes Ticket (Ulgowy 50%)",

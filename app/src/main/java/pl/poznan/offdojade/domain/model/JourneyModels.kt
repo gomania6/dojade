@@ -35,7 +35,9 @@ data class TicketRecommendation(
     val savingsPln: Double,
     val zones: List<String>,
     val isUlgowy: Boolean = false,
-    val recommendedTimeTicketPricePln: Double = recommendedTimeTicket.priceFor(isUlgowy)
+    val recommendedTimeTicketPricePln: Double = recommendedTimeTicket.priceFor(isUlgowy),
+    /** Группы остановок для PEKA tPortmonetka (разделяются, если пересадка > 20 мин) */
+    val pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList()
 ) {
     val zonesBadgeText: String
         get() = if (zones.isEmpty()) "Зона: A" else "Зоны: ${zones.joinToString(" + ")}"
@@ -49,7 +51,9 @@ data class LegStop(
     val latitude: Double,
     val longitude: Double,
     val scheduledTimeSec: Int,
-    val effectiveTimeSec: Int
+    val effectiveTimeSec: Int,
+    /** Остановка по требованию (Przystanek na żądanie — GTFS pickup_type=3 / drop_off_type=3) */
+    val isOnDemand: Boolean = false
 )
 
 sealed interface JourneyLeg {

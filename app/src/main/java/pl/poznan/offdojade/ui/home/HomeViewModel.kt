@@ -49,6 +49,7 @@ data class HomeUiState(
     val activeField: ActiveStopField? = null,
     val searchResults: List<StopGroup> = emptyList(),
     val addressResults: List<AddressResult> = emptyList(),
+    val isSearchingAddresses: Boolean = false,
     val plannedTime: PlannedTime = PlannedTime(),
     val hasActiveFilters: Boolean = false,
 
@@ -94,6 +95,18 @@ class HomeViewModel(
     private var slotSearchJob: Job? = null
 
     init {
+        // Восстанавливаем последний активный маршрут (чтобы при возврате с результатов можно было сразу его изменить)
+        transitGraphRepository.activeSearchRequest.value?.let { req ->
+            _uiState.update {
+                it.copy(
+                    fromEndpoint = req.from,
+                    fromQuery = req.from?.displayName.orEmpty(),
+                    toEndpoint = req.to,
+                    toQuery = req.to.displayName,
+                    plannedTime = req.plannedTime
+                )
+            }
+        }
         refreshDashboard()
         viewModelScope.launch {
             realtimeRepository.status.collect {
@@ -210,13 +223,24 @@ class HomeViewModel(
         }
 
         if (trimmed.length >= 3) {
+            _uiState.update { it.copy(isSearchingAddresses = true) }
             addressSearchJob = viewModelScope.launch {
-                delay(250L)
-                val addresses = addressSearchProvider.searchAddresses(trimmed, limit = 5)
-                _uiState.update { it.copy(addressResults = addresses) }
+                delay(180L)
+                val addresses = addressSearchProvider.searchAddresses(trimmed, limit = 6)
+                _uiState.update {
+                    it.copy(
+                        addressResults = addresses,
+                        isSearchingAddresses = false
+                    )
+                }
             }
         } else {
-            _uiState.update { it.copy(addressResults = emptyList()) }
+            _uiState.update {
+                it.copy(
+                    addressResults = emptyList(),
+                    isSearchingAddresses = false
+                )
+            }
         }
     }
 
@@ -331,6 +355,17 @@ class HomeViewModel(
 
     fun prepareRouteSearch(to: RouteEndpoint) {
         val from = _uiState.value.fromEndpoint
+        _uiState.update {
+            it.copy(
+                fromEndpoint = from,
+                fromQuery = from?.displayName.orEmpty(),
+                toEndpoint = to,
+                toQuery = to.displayName,
+                activeField = null,
+                searchResults = emptyList(),
+                addressResults = emptyList()
+            )
+        }
         transitGraphRepository.setActiveSearchRequest(
             RouteSearchRequest(
                 from = from,
@@ -392,6 +427,17 @@ class HomeViewModel(
             )
         }
 
+        _uiState.update {
+            it.copy(
+                fromEndpoint = from,
+                fromQuery = from?.displayName.orEmpty(),
+                toEndpoint = to,
+                toQuery = to.displayName,
+                activeField = null,
+                searchResults = emptyList(),
+                addressResults = emptyList()
+            )
+        }
         transitGraphRepository.setActiveSearchRequest(
             RouteSearchRequest(
                 from = from,
@@ -461,13 +507,6 @@ class HomeViewModel(
      */
     suspend fun prepareQuickRouteFromGps(stopId: String, stopName: String) {
         val freshLoc = locationProvider.getFreshOrFallbackLocation()
-        _uiState.update {
-            it.copy(
-                userLocation = freshLoc,
-                fromEndpoint = null,
-                fromQuery = ""
-            )
-        }
         val group = StopGroup(
             displayName = stopName,
             primaryStopId = stopId,
@@ -478,6 +517,16 @@ class HomeViewModel(
             longitude = 0.0
         )
         val target = RouteEndpoint.Stop(group)
+        _uiState.update {
+            it.copy(
+                userLocation = freshLoc,
+                fromEndpoint = null,
+                fromQuery = "",
+                toEndpoint = target,
+                toQuery = stopName,
+                activeField = null
+            )
+        }
         transitGraphRepository.setActiveSearchRequest(
             RouteSearchRequest(
                 from = null,
@@ -498,7 +547,15 @@ class HomeViewModel(
             latitude = 0.0,
             longitude = 0.0
         )
-        prepareRouteSearch(RouteEndpoint.Stop(group))
+        val target = RouteEndpoint.Stop(group)
+        _uiState.update {
+            it.copy(
+                toEndpoint = target,
+                toQuery = stopName,
+                activeField = null
+            )
+        }
+        prepareRouteSearch(target)
     }
 
     fun toggleFavoriteStop(stopId: String) {

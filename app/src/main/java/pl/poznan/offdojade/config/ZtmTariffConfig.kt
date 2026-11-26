@@ -60,6 +60,12 @@ object ZtmTariffConfig {
     const val PEKA_MAX_CAP_NORMAL_PLN = 18.00
     const val PEKA_MAX_CAP_ULGOWY_PLN = 9.00
 
+    /** Максимальное время пересадки (20 минут), в пределах которого tPortmonetka продолжает считать остановки по текущему тарифу */
+    const val PEKA_MAX_TRANSFER_WINDOW_SEC = 20 * 60
+
+    /** Максимальное число пересадок в одной непрерывной поездке по tPortmonetka (правило ZTM Poznań: до 3 пересадок) */
+    const val PEKA_MAX_CONTINUOUS_TRANSFERS = 3
+
     /**
      * Вычисляет стоимость поездки по PEKA tPortmonetka для заданного количества остановок
      * с учётом льготы ulgowy (50%) и потолка 18.00 zł (9.00 zł для ulgowy).
@@ -75,5 +81,18 @@ object ZtmTariffConfig {
         val cap = if (isUlgowy) PEKA_MAX_CAP_ULGOWY_PLN else PEKA_MAX_CAP_NORMAL_PLN
         val capped = adjusted.coerceAtMost(cap)
         return kotlin.math.round(capped * 100.0) / 100.0
+    }
+
+    /**
+     * Вычисляет стоимость поездки по PEKA tPortmonetka с учётом правила 20-минутной пересадки:
+     * каждая группа в [stopGroups] — это непрерывная цепочка сегментов с пересадками <= 20 мин.
+     * Если пересадка превышает 20 минут, начинается новая группа (счётчик остановок сбрасывается на 1-ю остановку),
+     * но общий суточный потолок 18.00 zł (9.00 zł ulgowy) всё равно соблюдается.
+     */
+    fun calculatePekaCostForGroupsPln(stopGroups: List<Int>, isUlgowy: Boolean = false): Double {
+        if (stopGroups.isEmpty()) return 0.0
+        val rawSum = stopGroups.sumOf { stops -> calculatePekaCostPln(stops, isUlgowy) }
+        val cap = if (isUlgowy) PEKA_MAX_CAP_ULGOWY_PLN else PEKA_MAX_CAP_NORMAL_PLN
+        return kotlin.math.round(rawSum.coerceAtMost(cap) * 100.0) / 100.0
     }
 }
