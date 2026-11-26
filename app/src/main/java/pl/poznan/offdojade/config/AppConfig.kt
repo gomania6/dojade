@@ -39,7 +39,7 @@ object AppConfig {
      * >>> ЗАМЕНИТЕ `USER/REPO` НА ВАШ РЕПОЗИТОРИЙ GITHUB С РЕЛИЗОМ `poznan.pmtiles` <<<
      */
     const val MAP_DOWNLOAD_URL =
-        "https://github.com/USER/REPO/releases/download/map-v1/poznan.pmtiles"
+        "https://github.com/gomania6/dojade/releases/download/map-v1/poznan.pmtiles"
 
     /** Локальное имя файла карты в `context.filesDir` */
     const val LOCAL_MAP_FILENAME = "poznan.pmtiles"
@@ -47,19 +47,13 @@ object AppConfig {
     // -------------------------------------------------------------------------
     // 4. «Бесплатный сервер» через GitHub Actions (готовая SQLite-база)
     // -------------------------------------------------------------------------
-    /**
-     * Метаданные ночной сборки расписания (~100 байт).
-     * >>> ЗАМЕНИТЕ `USER/REPO` НА ВАШ РЕПОЗИТОРИЙ GITHUB <<<
-     */
+    /** Метаданные ночной сборки расписания (~100 байт). */
     const val SCHEDULE_VERSION_URL =
-        "https://github.com/USER/REPO/releases/download/schedule-latest/version.json"
+        "https://github.com/gomania6/dojade/releases/download/schedule-latest/version.json"
 
-    /**
-     * Сжатая готовая SQLite-база расписаний с индексами и пешими пересадками.
-     * >>> ЗАМЕНИТЕ `USER/REPO` НА ВАШ РЕПОЗИТОРИЙ GITHUB <<<
-     */
+    /** Сжатая готовая SQLite-база расписаний с индексами и пешими пересадками. */
     const val SCHEDULE_DB_GZ_URL =
-        "https://github.com/USER/REPO/releases/download/schedule-latest/poznan_schedule.db.gz"
+        "https://github.com/gomania6/dojade/releases/download/schedule-latest/poznan_schedule.db.gz"
 
     /** Имя локального файла базы Room */
     const val DATABASE_NAME = "ztm_poznan_gtfs.db"
