@@ -1,0 +1,40 @@
+name: Build Poznań Offline Map (PMTiles)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-poznan-map:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install pmtiles CLI
+        run: go install github.com/protomaps/go-pmtiles/cmd/pmtiles@latest
+
+      - name: Extract Poznań & agglomeration from latest Protomaps build
+        run: |
+          LATEST_KEY=$(curl -s https://build-metadata.protomaps.dev/builds.json | jq -r '.[-1].key')
+          SOURCE_URL="https://build.protomaps.com/${LATEST_KEY}"
+          echo "Extracting Poznań from: $SOURCE_URL"
+          pmtiles extract "$SOURCE_URL" poznan.pmtiles --bbox=16.65,52.28,17.15,52.53 --maxzoom=15
+          ls -lh poznan.pmtiles
+
+      - name: Publish poznan.pmtiles to GitHub Releases (map-v1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="map-v1"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" poznan.pmtiles --clobber
+          else
+            gh release create "$TAG" poznan.pmtiles \
+              --title "Poznań Offline Vector Map (PMTiles)" \
+              --notes "Офлайн-векторная карта Познани и агломерации для OffDojade."
+          fi
