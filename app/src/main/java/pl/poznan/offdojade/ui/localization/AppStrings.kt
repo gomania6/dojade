@@ -254,7 +254,26 @@ data class AppStrings(
     val liveMapCurrentStop: (String) -> String,
     val liveMapActiveVehicles: (Int) -> String,
     val liveMapNoVehicles: String,
-    val liveMapTapVehicleHint: String
+    val liveMapTapVehicleHint: String,
+
+    // Extra Settings
+    val walkingPaceLabel: String,
+    val paceSlow: String,
+    val paceNormal: String,
+    val paceFast: String,
+    val maxWalkDistanceLabel: String,
+    val liveRefreshIntervalLabel: String,
+    val liveRefreshOff: String,
+    val secShort: String,
+    val autoUpdateScheduleTitle: String,
+    val autoUpdateScheduleDesc: String,
+    val showMapLandmarksTitle: String,
+    val showMapLandmarksDesc: String,
+    val scheduleInfoSummary: (Int, Int, String) -> String,
+    val mapInfoLoaded: (String) -> String,
+    val mapInfoNotDownloaded: String,
+    val rebuildGraphCacheAction: String,
+    val graphCacheRebuilt: String
 ) {
     fun ticketDurationLabel(ticketId: String, maxMinutes: Int): String = when (ticketId) {
         "t24h" -> ticket24hLabel
@@ -542,7 +561,24 @@ private val RussianStrings = AppStrings(
     liveMapCurrentStop = { "Остановка: $it" },
     liveMapActiveVehicles = { "На линии: $it" },
     liveMapNoVehicles = "Нет живых данных транспорта. Проверьте подключение к интернету.",
-    liveMapTapVehicleHint = "Нажмите на автобус или трамвай, чтобы увидеть маршрут и направление"
+    liveMapTapVehicleHint = "Нажмите на автобус или трамвай, чтобы увидеть маршрут и направление",
+    walkingPaceLabel = "Темп ходьбы",
+    paceSlow = "Спокойный",
+    paceNormal = "Обычный",
+    paceFast = "Быстрый",
+    maxWalkDistanceLabel = "Макс. пешком до остановки",
+    liveRefreshIntervalLabel = "Обновление GPS транспорта",
+    liveRefreshOff = "Выкл",
+    secShort = "с",
+    autoUpdateScheduleTitle = "Автообновление расписания",
+    autoUpdateScheduleDesc = "Проверять новое расписание ZTM и поездов при запуске",
+    showMapLandmarksTitle = "Значки мест на карте",
+    showMapLandmarksDesc = "Показывать университеты, парки, вокзалы и ТЦ Познани",
+    scheduleInfoSummary = { stops, trips, date -> "База: $stops ост. • $trips рейсов ($date)" },
+    mapInfoLoaded = { mb -> "Оффлайн-карта Познани: $mb МБ" },
+    mapInfoNotDownloaded = "Оффлайн-карта не скачана",
+    rebuildGraphCacheAction = "Пересобрать кэш расписания",
+    graphCacheRebuilt = "Кэш расписания обновлён"
 )
 
 private val UkrainianStrings = AppStrings(
@@ -788,7 +824,24 @@ private val UkrainianStrings = AppStrings(
     liveMapCurrentStop = { "Зупинка: $it" },
     liveMapActiveVehicles = { "На лінії: $it" },
     liveMapNoVehicles = "Немає живих даних транспорту. Перевірте підключення до інтернету.",
-    liveMapTapVehicleHint = "Натисніть на автобус або трамвай, щоб побачити маршрут і напрямок"
+    liveMapTapVehicleHint = "Натисніть на автобус або трамвай, щоб побачити маршрут і напрямок",
+    walkingPaceLabel = "Темп ходьби",
+    paceSlow = "Спокійний",
+    paceNormal = "Звичайний",
+    paceFast = "Швидкий",
+    maxWalkDistanceLabel = "Макс. пішки до зупинки",
+    liveRefreshIntervalLabel = "Оновлення GPS транспорту",
+    liveRefreshOff = "Вимк",
+    secShort = "с",
+    autoUpdateScheduleTitle = "Автооновлення розкладу",
+    autoUpdateScheduleDesc = "Перевіряти новий розклад ZTM і поїздів при запуску",
+    showMapLandmarksTitle = "Значки місць на карті",
+    showMapLandmarksDesc = "Показувати університети, парки, вокзали та ТЦ Познані",
+    scheduleInfoSummary = { stops, trips, date -> "База: $stops зуп. • $trips рейсів ($date)" },
+    mapInfoLoaded = { mb -> "Офлайн-карта Познані: $mb МБ" },
+    mapInfoNotDownloaded = "Офлайн-карта не завантажена",
+    rebuildGraphCacheAction = "Перезібрати кеш розкладу",
+    graphCacheRebuilt = "Кеш розкладу оновлено"
 )
 
 private val PolishStrings = AppStrings(
@@ -1034,7 +1087,24 @@ private val PolishStrings = AppStrings(
     liveMapCurrentStop = { "Przystanek: $it" },
     liveMapActiveVehicles = { "Na trasie: $it" },
     liveMapNoVehicles = "Brak danych na żywo. Sprawdź połączenie z internetem.",
-    liveMapTapVehicleHint = "Dotknij autobus lub tramwaj, aby zobaczyć trasę i kierunek"
+    liveMapTapVehicleHint = "Dotknij autobus lub tramwaj, aby zobaczyć trasę i kierunek",
+    walkingPaceLabel = "Tempo marszu",
+    paceSlow = "Spokojne",
+    paceNormal = "Normalne",
+    paceFast = "Szybkie",
+    maxWalkDistanceLabel = "Maks. dojście pieszo",
+    liveRefreshIntervalLabel = "Odświeżanie GPS pojazdów",
+    liveRefreshOff = "Wył.",
+    secShort = "s",
+    autoUpdateScheduleTitle = "Autoaktualizacja rozkładu",
+    autoUpdateScheduleDesc = "Sprawdzaj nowe rozkłady ZTM i pociągów przy starcie",
+    showMapLandmarksTitle = "Punkty orientacyjne na mapie",
+    showMapLandmarksDesc = "Pokazuj uczelnie, parki, dworce i galerie Poznania",
+    scheduleInfoSummary = { stops, trips, date -> "Baza: $stops przyst. • $trips kursów ($date)" },
+    mapInfoLoaded = { mb -> "Mapa offline Poznania: $mb MB" },
+    mapInfoNotDownloaded = "Mapa offline niepobrana",
+    rebuildGraphCacheAction = "Przebuduj pamięć podręczną rozkładu",
+    graphCacheRebuilt = "Pamięć podręczna odświeżona"
 )
 
 private val EnglishStrings = AppStrings(
@@ -1273,7 +1343,24 @@ private val EnglishStrings = AppStrings(
     liveMapCurrentStop = { "Stop: $it" },
     liveMapActiveVehicles = { "Active: $it" },
     liveMapNoVehicles = "No live vehicle data. Check your internet connection.",
-    liveMapTapVehicleHint = "Tap a bus or tram to see its route line and destination"
+    liveMapTapVehicleHint = "Tap a bus or tram to see its route line and destination",
+    walkingPaceLabel = "Walking pace",
+    paceSlow = "Relaxed",
+    paceNormal = "Normal",
+    paceFast = "Brisk",
+    maxWalkDistanceLabel = "Max walk to stop",
+    liveRefreshIntervalLabel = "Live GPS refresh interval",
+    liveRefreshOff = "Off",
+    secShort = "s",
+    autoUpdateScheduleTitle = "Auto-update schedule",
+    autoUpdateScheduleDesc = "Check for updated ZTM & rail schedules on launch",
+    showMapLandmarksTitle = "Map landmarks",
+    showMapLandmarksDesc = "Show Poznań universities, parks, stations & malls",
+    scheduleInfoSummary = { stops, trips, date -> "DB: $stops stops • $trips trips ($date)" },
+    mapInfoLoaded = { mb -> "Poznań offline map: $mb MB" },
+    mapInfoNotDownloaded = "Offline map not downloaded",
+    rebuildGraphCacheAction = "Rebuild schedule cache",
+    graphCacheRebuilt = "Schedule cache rebuilt"
 )
 
 private val GermanStrings = AppStrings(
@@ -1512,5 +1599,22 @@ private val GermanStrings = AppStrings(
     liveMapCurrentStop = { "Haltestelle: $it" },
     liveMapActiveVehicles = { "Aktiv: $it" },
     liveMapNoVehicles = "Keine Live-Fahrzeugdaten. Prüfe die Internetverbindung.",
-    liveMapTapVehicleHint = "Tippe auf Bus oder Bahn, um Linie und Ziel zu sehen"
+    liveMapTapVehicleHint = "Tippe auf Bus oder Bahn, um Linie und Ziel zu sehen",
+    walkingPaceLabel = "Gehtempo",
+    paceSlow = "Gemütlich",
+    paceNormal = "Normal",
+    paceFast = "Zügig",
+    maxWalkDistanceLabel = "Max. Fußweg zur Haltestelle",
+    liveRefreshIntervalLabel = "Live-GPS-Intervall",
+    liveRefreshOff = "Aus",
+    secShort = "s",
+    autoUpdateScheduleTitle = "Fahrplan automatisch aktualisieren",
+    autoUpdateScheduleDesc = "Beim Start nach neuen ZTM- & Zugfahrplänen suchen",
+    showMapLandmarksTitle = "Ortsmarken auf der Karte",
+    showMapLandmarksDesc = "Universitäten, Parks, Bahnhöfe & Zentren anzeigen",
+    scheduleInfoSummary = { stops, trips, date -> "Datenbank: $stops Haltest. • $trips Fahrten ($date)" },
+    mapInfoLoaded = { mb -> "Offline-Karte Posen: $mb MB" },
+    mapInfoNotDownloaded = "Offline-Karte nicht geladen",
+    rebuildGraphCacheAction = "Fahrplan-Cache neu aufbauen",
+    graphCacheRebuilt = "Fahrplan-Cache aktualisiert"
 )

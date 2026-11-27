@@ -25,7 +25,7 @@ import pl.poznan.offdojade.data.local.entity.TripEntity
         ShapePointEntity::class,
         TransferEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class GtfsDatabase : RoomDatabase() {

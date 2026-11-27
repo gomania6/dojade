@@ -18,7 +18,7 @@
   - Android SDK: `C:\Users\goman\AppData\Local\Android\Sdk` (в `local.properties`).
   - **Релизная подпись:** настроен постоянный PKCS12 keystore `pyrtransit-release.jks` + `keystore.properties` (оба в `.gitignore`, также поддерживаются env-переменные `KEYSTORE_PATH` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD` для CI).
   - **Оптимизация релизного APK:** R8 (`isMinifyEnabled = true`, `isShrinkResources = true`), 5 локалей (`ru, uk, pl, en, de`), ABI `arm64-v8a` + `armeabi-v7a` (~24 МБ).
-  - **Стек:** Koin 4.0.0, Room 2.6.1 (KSP, **v3**), DataStore Preferences, OkHttp 4.12, Square Wire 5.1.0 (`gtfs-realtime.proto`), MapLibre Native Android 11.6.1 (`pmtiles://file://...`), WorkManager, Play Services Location.
+  - **Стек:** Koin 4.0.0, Room 2.6.1 (KSP, **v4**), DataStore Preferences, OkHttp 4.12, Square Wire 5.1.0 (`gtfs-realtime.proto`), MapLibre Native Android 11.6.1 (`pmtiles://file://...`), WorkManager, Play Services Location.
 
 ---
 
@@ -37,10 +37,16 @@
 - Вшита цепочка УЦ **Certum** строго для `ztm.poznan.pl` (исправляет `CertPathValidatorException` на Android).
 
 ### C. Слой данных (`data/`) и GitHub Actions
-- **Room v3 (`GtfsDatabase.kt`):** миграции `MIGRATION_1_2` + `MIGRATION_2_3`, поля `isOnDemand` (`pickup_type=3`/`drop_off_type=3`), identityHash `5580ec83493b75b81b4aae9882bdb229` синхронизирован с `scripts/build_gtfs_db.py`.
+- **Room v4 (`GtfsDatabase.kt`):** миграции `MIGRATION_1_2` + `MIGRATION_2_3` + `MIGRATION_3_4` (удалены 4 избыточных индекса `stop_times`/`shapes`/`transfers`, экономия ~75–85 МБ в БД), поля `isOnDemand`, identityHash `dc4426e9d6a7b832b5461a17d983f804` синхронизирован с `scripts/build_gtfs_db.py`.
+- **Ускорение первой загрузки расписания:**
+  - `scripts/build_gtfs_db.py`: `PRAGMA page_size = 8192`, без лишних индексов, упрощение геометрии линий алгоритмом Дугласа–Пекера (`SHAPE_SIMPLIFY_METERS = 8.0`).
+  - `OnboardingViewModel.kt`: при первом запуске расписание скачивается первым (без конкуренции за канал с офлайн-картой ~90 МБ), карта стартует автоматически сразу после.
+  - `PrebuiltDbDownloader.kt`: буферизованная распаковка GZIP (буферы 256 КБ / 128 КБ).
+  - `TransitGraphRepository.kt`: прямое чтение `stop_times` через `SupportSQLiteDatabase` (`loadStopTimesForServicesFast`, без temp B-tree `ORDER BY`) и асинхронное сохранение `RaptorDataCache` после выдачи графа в UI.
 - **Пригородные электрички (Koleje Wielkopolskie + Polregio):** `scripts/build_gtfs_db.py` автоматически объединяет GTFS ZTM Poznań с региональными поездами (`https://mkuran.pl/gtfs/polish_trains.zip`, резерв `http://ws.kolejewlkp.pl:83/gtfs_kw.zip`, агентства `KW` и `PR` в bbox Познаньской агломерации, префикс `rail_`, радиус пересадок ZTM↔ж/д до 450 м).
+- **Раздельный календарь ZTM и ж/д (`TransitGraphRepository.resolveActiveServicesForDate`):** активные `service_id` для ZTM и `rail_*` определяются независимо с отдельными фолбэками, чтобы даты ж/д фида не скрывали трамваи и автобусы ZTM.
 - **Бинарный дисковый кэш графа (`RaptorDataCache.kt`):** сохраняет собранный граф в `cacheDir/raptor_graph_v1_YYYYMMDD.bin`, `OffDojadeApp.onCreate` заранее прогревает сегодня и завтра (~50–120 мс).
-- **GTFS-RT (`RealtimeRepository.kt`):** опрос каждые 20 с, `LiveVehicle` хранит `tripId`, `routeId`, `bearing`, `currentStopId`, `currentStopSequence`, Graceful Fallback в `Offline`.
+- **GTFS-RT (`RealtimeRepository.kt`):** настраиваемый интервал опроса (`15/20/30/60 с` или пауза/офлайн `0`), `LiveVehicle` хранит `tripId`, `routeId`, `bearing`, `currentStopId`, `currentStopSequence`, Graceful Fallback в `Offline`.
 - **Пешие маршруты (`WalkingRouteProvider.kt`):** OSRM Foot API возвращает реальную геометрию и реальную дистанцию по дорогам (`routes[0].distance`), с защитой от привязки к мостам/виадукам на смене платформ и коротких переходах `≤ 120 м`.
 - **Уведомления (`data/notifications/`):**
   - `OffDojadeNotifications.kt` — тихое фоновое уведомление обновления расписания в `GtfsSyncWorker` (только когда приложение не на переднем плане).
@@ -61,9 +67,10 @@
 - **`RouteDetailsScreen`:** оффлайн-карта `OfflineMapStyleHelper` (светлая и тёмная темы, названия улиц и районов, 18 значков университетов и мест Познани с `minZoom = 13.5`, скрытие промежуточных кружков при отдалении, строго 1 точный трамвай/автобус на сегмент), автообновление живых задержек при входе, нейтральные тёмные плашки пересадок, точный расчёт минут пересадки, компактная подпись смены платформы, предупреждение о короткой пересадке (только между двумя сегментами транспорта), кнопка динамического уведомления в TopAppBar.
 - **`TimetablesScreen`:** статичные расписания линий с вкладками **«Трамваи | Автобусы | Поезда»** и переключателем **«Список | Карта»** (`TimetableStopsMapView`).
 - **`LiveMapScreen` (вкладка «Карта» в нижней панели):** живая оффлайн-карта со всеми активными трамваями и автобусами из GTFS-RT, фильтром по виду транспорта и поиском по номеру линии; при нажатии на транспорт рисуется полупрозрачная линия маршрута с остановками и всплывает карточка с направлением (`→ headsign`), текущей/следующей остановкой и задержкой.
+- **`SettingsScreen`:** выбор языка (5 локалей), тема, шрифт, профиль тарифа и зона, типы транспорта, режим маршрутизации, темп ходьбы (`SLOW/NORMAL/FAST`), макс. дистанция пешком (`300–1000 м`), интервал обновления Live GPS (`15/20/30/60 с` или выкл), автообновление расписания при запуске, показ значков ориентиров на карте, статус офлайн-БД и карты, кнопки обновления расписания и пересборки кэша графа.
 
 ---
 
 ## 3. Текущий статус
-- Юнит-тесты: **33/33 passed** (`testDebugUnitTest`).
+- Юнит-тесты: **34/34 passed** (`testDebugUnitTest`).
 - Релизная сборка: подписанный `app/build/outputs/apk/release/app-release.apk` (`BUILD SUCCESSFUL`).

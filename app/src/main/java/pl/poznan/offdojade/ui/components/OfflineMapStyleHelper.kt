@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import androidx.compose.runtime.staticCompositionLocalOf
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.PropertyFactory
@@ -15,6 +16,8 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
 import java.io.File
+
+val LocalShowMapLandmarks = staticCompositionLocalOf { true }
 
 /**
  * Общий генератор стиля оффлайн-карты `poznan.pmtiles` (Protomaps v4) для светлой и тёмной темы,

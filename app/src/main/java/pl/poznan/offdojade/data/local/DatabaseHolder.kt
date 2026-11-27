@@ -63,7 +63,7 @@ class DatabaseHolder(private val context: Context) {
             GtfsDatabase::class.java,
             AppConfig.DATABASE_NAME
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -109,6 +109,15 @@ class DatabaseHolder(private val context: Context) {
                 db.execSQL(
                     "ALTER TABLE `stop_times` ADD COLUMN `is_on_demand` INTEGER NOT NULL DEFAULT 0"
                 )
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS `index_stop_times_stop_id`")
+                db.execSQL("DROP INDEX IF EXISTS `index_stop_times_trip_id`")
+                db.execSQL("DROP INDEX IF EXISTS `index_shapes_shape_id`")
+                db.execSQL("DROP INDEX IF EXISTS `index_transfers_from_stop_id`")
             }
         }
     }

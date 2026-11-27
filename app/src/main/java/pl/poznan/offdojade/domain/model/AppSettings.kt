@@ -35,6 +35,17 @@ enum class RoutePreference(val key: String) {
     }
 }
 
+enum class WalkingPace(val key: String, val speedMps: Double) {
+    SLOW("slow", 0.9),
+    NORMAL("normal", 1.2),
+    FAST("fast", 1.5);
+
+    companion object {
+        fun fromKey(key: String?): WalkingPace =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: NORMAL
+    }
+}
+
 /**
  * Все виды транспорта, встречающиеся в GTFS и на транспортных схемах.
  */
@@ -89,7 +100,9 @@ data class TripSettings(
     val excludedZones: Set<String> = emptySet(),
     val lowFloorOnly: Boolean = false,
     val minTransferMinutes: Int = 2,
-    val isUlgowyTicket: Boolean = false
+    val isUlgowyTicket: Boolean = false,
+    val walkingPace: WalkingPace = WalkingPace.NORMAL,
+    val maxOriginWalkMeters: Int = 600
 ) {
     val effectiveMaxTransfers: Int
         get() = if (avoidTransfers) 1 else 3
@@ -129,11 +142,16 @@ data class TripSettings(
             preferredLines.isNotEmpty() ||
             excludedZones.isNotEmpty() ||
             lowFloorOnly ||
-            minTransferMinutes != 2
+            minTransferMinutes != 2 ||
+            walkingPace != WalkingPace.NORMAL ||
+            maxOriginWalkMeters != 600
 }
 
 data class AppSettings(
     val language: AppLanguage = AppLanguage.RU,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val tripSettings: TripSettings = TripSettings()
+    val tripSettings: TripSettings = TripSettings(),
+    val realtimePollIntervalSec: Int = 20,
+    val autoUpdateSchedule: Boolean = true,
+    val showMapLandmarks: Boolean = true
 )

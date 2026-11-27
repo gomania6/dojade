@@ -1069,4 +1069,34 @@ class RaptorEngineTest {
         )
         assertTrue(noRailResults.isEmpty())
     }
+
+    @Test
+    fun walkingPaceSetting_adjustsInitialWalkDurationAndCatchability() {
+        val graph = buildSampleGraph()
+        // Пользователь ~120 м от Górczyn Tramwaj
+        val slowResults = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = null,
+            originLat = 52.3840,
+            originLon = 16.8788,
+            targetStopId = "S_KAP",
+            departureTimeSec = 8 * 3600 + 10 * 60,
+            tripSettings = TripSettings(walkingPace = pl.poznan.offdojade.domain.model.WalkingPace.SLOW),
+            limit = 3
+        )
+        val fastResults = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = null,
+            originLat = 52.3840,
+            originLon = 16.8788,
+            targetStopId = "S_KAP",
+            departureTimeSec = 8 * 3600 + 10 * 60,
+            tripSettings = TripSettings(walkingPace = pl.poznan.offdojade.domain.model.WalkingPace.FAST),
+            limit = 3
+        )
+        assertTrue(slowResults.isNotEmpty() && fastResults.isNotEmpty())
+        val slowWalk = slowResults.first().legs.first() as JourneyLeg.WalkLeg
+        val fastWalk = fastResults.first().legs.first() as JourneyLeg.WalkLeg
+        assertTrue("Медленный темп должен давать больше секунд пешком, чем быстрый", slowWalk.durationSec > fastWalk.durationSec)
+    }
 }

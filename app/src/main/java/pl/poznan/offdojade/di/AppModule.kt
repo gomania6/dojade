@@ -51,7 +51,7 @@ val appModule = module {
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { RouteResultsViewModel(get(), get(), get(), get(), get()) }
     viewModel { RouteDetailsViewModel(get(), get(), get(), get()) }
-    viewModel { SettingsViewModel(get()) }
+    viewModel { SettingsViewModel(get(), get(), get()) }
     viewModel { TimetablesViewModel(get(), get()) }
     viewModel { LiveMapViewModel(get(), get(), get(), get()) }
 }

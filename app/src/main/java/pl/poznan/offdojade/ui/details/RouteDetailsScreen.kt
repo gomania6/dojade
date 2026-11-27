@@ -148,6 +148,7 @@ import pl.poznan.offdojade.data.gtfs.GeoUtils
 import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.TransitLegInsight
 import pl.poznan.offdojade.ui.components.AnimatedLiveSignal
+import pl.poznan.offdojade.ui.components.LocalShowMapLandmarks
 import pl.poznan.offdojade.ui.components.OfflineMapStyleHelper
 import pl.poznan.offdojade.ui.components.TicketRecommendationCard
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
@@ -1862,9 +1863,11 @@ private fun OfflineRouteMapView(
         }
     }
 
+    val showLandmarks = LocalShowMapLandmarks.current
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
+    val styleKey = remember(styleJson, showLandmarks) { "$styleJson|$showLandmarks" }
     val density = LocalDensity.current
     val hitRadiusPx = remember(density) { with(density) { 24.dp.toPx() } }
     val basePaddingPx = remember(density) { with(density) { 28.dp.toPx() }.toInt() }
@@ -1934,10 +1937,12 @@ private fun OfflineRouteMapView(
                 }
 
                 val currentStyle = map.style
-                if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
-                    appliedStyleJson = styleJson
+                if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleKey) {
+                    appliedStyleJson = styleKey
                     map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                        OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                        if (showLandmarks) {
+                            OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                        }
                         renderRouteOverlay(
                             style = loadedStyle,
                             journey = journey,

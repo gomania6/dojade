@@ -91,6 +91,7 @@ import org.maplibre.geojson.Point
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.location.UserLocation
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
+import pl.poznan.offdojade.ui.components.LocalShowMapLandmarks
 import pl.poznan.offdojade.ui.components.OfflineMapStyleHelper
 import pl.poznan.offdojade.ui.components.RealtimeStatusBadge
 import pl.poznan.offdojade.ui.localization.LocalStrings
@@ -517,9 +518,11 @@ private fun LiveVehiclesMapView(
         }
     }
 
+    val showLandmarks = LocalShowMapLandmarks.current
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
+    val styleKey = remember(styleJson, showLandmarks) { "$styleJson|$showLandmarks" }
     val density = LocalDensity.current
     val hitRadiusPx = remember(density) { with(density) { 22.dp.toPx() } }
     var appliedStyleJson by remember { mutableStateOf<String?>(null) }
@@ -564,10 +567,12 @@ private fun LiveVehiclesMapView(
                 }
 
                 val currentStyle = map.style
-                if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
-                    appliedStyleJson = styleJson
+                if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleKey) {
+                    appliedStyleJson = styleKey
                     map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                        OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                        if (showLandmarks) {
+                            OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                        }
                         renderLiveMapOverlay(
                             style = loadedStyle,
                             vehicles = vehicles,

@@ -13,6 +13,8 @@ import okhttp3.Request
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.DatabaseHolder
 import pl.poznan.offdojade.data.local.PreferencesRepository
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -99,10 +101,10 @@ class PrebuiltDbDownloader(
                 val digest = MessageDigest.getInstance("SHA-256")
                 var writtenBytes = 0L
                 var lastEmit = 0L
-                val buffer = ByteArray(64 * 1024)
+                val buffer = ByteArray(128 * 1024)
 
-                GZIPInputStream(body.byteStream(), 64 * 1024).use { gzis ->
-                    DigestOutputStream(FileOutputStream(tmpFile), digest).use { out ->
+                GZIPInputStream(BufferedInputStream(body.byteStream(), 256 * 1024), 256 * 1024).use { gzis ->
+                    DigestOutputStream(BufferedOutputStream(FileOutputStream(tmpFile), 256 * 1024), digest).use { out ->
                         while (true) {
                             val read = gzis.read(buffer)
                             if (read == -1) break
@@ -122,6 +124,7 @@ class PrebuiltDbDownloader(
                                 )
                             }
                         }
+                        out.flush()
                     }
                 }
 

@@ -1,9 +1,12 @@
 package pl.poznan.offdojade.domain.routing
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -12,6 +15,7 @@ import pl.poznan.offdojade.data.local.DatabaseHolder
 import pl.poznan.offdojade.data.local.entity.RouteEntity
 import pl.poznan.offdojade.data.local.entity.ShapePointEntity
 import pl.poznan.offdojade.data.local.entity.StopEntity
+import pl.poznan.offdojade.data.local.entity.StopTimeEntity
 import pl.poznan.offdojade.domain.model.RouteSearchRequest
 import pl.poznan.offdojade.domain.model.StopGroup
 import pl.poznan.offdojade.domain.model.TransitJourney
@@ -29,6 +33,7 @@ class TransitGraphRepository(
 ) {
     private val dao get() = databaseHolder.dao
     private val mutex = Mutex()
+    private val cacheIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _graph = MutableStateFlow<RaptorData?>(null)
     val graph: StateFlow<RaptorData?> = _graph.asStateFlow()
@@ -109,32 +114,16 @@ class TransitGraphRepository(
                 }
             }
 
-            // 2. Сборка из Room SQLite и сохранение в бинарный кэш для будущих запросов
+            // 2. Быстрая сборка из Room SQLite (с раздельным fallback ZTM + ж/д и прямым чтением курсора)
             val stops = dao.getAllStops()
             if (stops.isEmpty()) return@withContext null
-            val calendars = dao.getAllCalendars()
-            val calendarDates = dao.getCalendarDatesForDate(dateInt)
-            val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
-                date = date,
-                calendars = calendars,
-                calendarDatesForDate = calendarDates
-            )
+            val serviceIdsToLoad = resolveActiveServicesForDate(date)
             val routes = dao.getAllRoutes()
             val transfers = dao.getAllTransfers()
-            val serviceIdsToLoad = if (activeServices.isNotEmpty()) {
-                activeServices.toList()
-            } else {
-                calendars
-                    .filter { cal -> matchesDayOfWeek(cal, date.dayOfWeek) }
-                    .map { it.serviceId }
-                    .distinct()
-            }
             val trips = serviceIdsToLoad.chunked(500).flatMap { chunk ->
                 dao.getTripsForServices(chunk)
             }
-            val stopTimes = serviceIdsToLoad.chunked(500).flatMap { chunk ->
-                dao.getStopTimesForServices(chunk)
-            }
+            val stopTimes = loadStopTimesForServicesFast(serviceIdsToLoad)
             val built = TransitGraphBuilder.build(
                 serviceDateYyyymmdd = dateInt,
                 stops = stops,
@@ -145,7 +134,9 @@ class TransitGraphRepository(
             )
             cachedAlternateDayGraph = dateInt to built
             if (dbFingerprint != 0L && built.stopCount > 0) {
-                RaptorDataCache.save(cacheFile, dbFingerprint, built)
+                cacheIoScope.launch {
+                    RaptorDataCache.save(cacheFile, dbFingerprint, built)
+                }
             }
             built
         }
@@ -185,41 +176,22 @@ class TransitGraphRepository(
                     }
                 }
 
-                // 2. Полная сборка из Room SQLite (при первом запуске или после обновления расписания)
+                // 2. Быстрая сборка из Room SQLite (с раздельным fallback ZTM + ж/д и асинхронным сохранением кэша)
                 val stops = dao.getAllStops()
                 if (stops.isEmpty()) {
                     cachedStopGroups = null
                     _graph.value = null
                     return@withContext null
                 }
-                val calendars = dao.getAllCalendars()
-                val calendarDates = dao.getCalendarDatesForDate(dateInt)
-                val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
-                    date = date,
-                    calendars = calendars,
-                    calendarDatesForDate = calendarDates
-                )
-
+                val serviceIdsToLoad = resolveActiveServicesForDate(date)
                 val routes = dao.getAllRoutes()
                 val transfers = dao.getAllTransfers()
-
-                // Если активных сервисов на точную дату нет (архив устарел), берем ТОЛЬКО сервисы того же дня недели
-                val serviceIdsToLoad = if (activeServices.isNotEmpty()) {
-                    activeServices.toList()
-                } else {
-                    calendars
-                        .filter { cal -> matchesDayOfWeek(cal, date.dayOfWeek) }
-                        .map { it.serviceId }
-                        .distinct()
-                }
 
                 // SQLite имеет лимит на кол-во bind-параметров (999) -> грузим чанками по 500
                 val trips = serviceIdsToLoad.chunked(500).flatMap { chunk ->
                     dao.getTripsForServices(chunk)
                 }
-                val stopTimes = serviceIdsToLoad.chunked(500).flatMap { chunk ->
-                    dao.getStopTimesForServices(chunk)
-                }
+                val stopTimes = loadStopTimesForServicesFast(serviceIdsToLoad)
 
                 val built = TransitGraphBuilder.build(
                     serviceDateYyyymmdd = dateInt,
@@ -233,10 +205,12 @@ class TransitGraphRepository(
                 cachedAlternateDayGraph = null
                 _graph.value = built
 
-                // Сохраняем бинарный кэш на диск для мгновенного следующего запуска
+                // Сохраняем бинарный кэш на диск асинхронно в фоне, не задерживая пользователя!
                 if (dbFingerprint != 0L && built.stopCount > 0) {
-                    RaptorDataCache.save(cacheFile, dbFingerprint, built)
-                    databaseHolder.pruneOldGraphCaches(dateInt)
+                    cacheIoScope.launch {
+                        RaptorDataCache.save(cacheFile, dbFingerprint, built)
+                        databaseHolder.pruneOldGraphCaches(dateInt)
+                    }
                 }
                 built
             } finally {
@@ -319,6 +293,7 @@ class TransitGraphRepository(
 
     companion object {
         private val WARSAW_ZONE: ZoneId = ZoneId.of("Europe/Warsaw")
+        private const val RAIL_SERVICE_PREFIX = "rail_"
 
         fun groupStopsByName(stops: List<StopEntity>): List<StopGroup> {
             val grouped = LinkedHashMap<String, MutableList<StopEntity>>()
@@ -400,20 +375,117 @@ class TransitGraphRepository(
         DayOfWeek.SUNDAY -> cal.sunday
     }
 
+    suspend fun clearGraphCachesAndReload(): RaptorData? {
+        databaseHolder.clearGraphCaches()
+        cachedAlternateDayGraph = null
+        cachedRouteResults = null
+        return reloadForToday()
+    }
+
+    suspend fun getDatabaseCounts(): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        dao.getStopCount() to dao.getTripCount()
+    }
+
+    /**
+     * Прямая потоковая выборка `stop_times` по активным `service_id` без `ORDER BY` temp B-tree в SQLite
+     * (ускоряет первичную сборку графа RAPTOR в несколько раз — сортировка по `stopSequence` идёт на уровне рейса в памяти).
+     */
+    private suspend fun loadStopTimesForServicesFast(serviceIds: List<String>): List<StopTimeEntity> =
+        withContext(Dispatchers.IO) {
+            if (serviceIds.isEmpty()) return@withContext emptyList()
+            val db = databaseHolder.database.openHelper.readableDatabase
+            val result = ArrayList<StopTimeEntity>(250_000)
+            for (chunk in serviceIds.chunked(500)) {
+                val placeholders = chunk.joinToString(",") { "?" }
+                val sql = "SELECT st.trip_id, st.stop_sequence, st.stop_id, st.arrival_time_sec, st.departure_time_sec, st.is_on_demand " +
+                    "FROM stop_times st INNER JOIN trips t ON st.trip_id = t.trip_id " +
+                    "WHERE t.service_id IN ($placeholders)"
+                db.query(sql, chunk.toTypedArray()).use { c ->
+                    while (c.moveToNext()) {
+                        result.add(
+                            StopTimeEntity(
+                                tripId = c.getString(0),
+                                stopSequence = c.getInt(1),
+                                stopId = c.getString(2),
+                                arrivalTimeSec = c.getInt(3),
+                                departureTimeSec = c.getInt(4),
+                                isOnDemand = c.getInt(5)
+                            )
+                        )
+                    }
+                }
+            }
+            result
+        }
+
+    /**
+     * Разрешает активные `service_id` на дату [date] НЕЗАВИСИМО для ZTM (автобусы/трамваи)
+     * и для электричек (`rail_*`). Если у одного из источников календарь начинается завтра
+     * или устарел, его fallback срабатывает независимо и не глушится вторым источником!
+     */
+    private suspend fun resolveActiveServicesForDate(
+        date: LocalDate,
+        dayTypeOverride: TimetableDayType? = null
+    ): List<String> {
+        val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
+        val calendars = dao.getAllCalendars()
+        val calendarDates = dao.getCalendarDatesForDate(dateInt)
+        val exactActive = ServiceCalendarResolver.resolveActiveServiceIds(
+            date = date,
+            calendars = calendars,
+            calendarDatesForDate = calendarDates
+        )
+
+        val ztmActive = exactActive.filterNot { it.startsWith(RAIL_SERVICE_PREFIX) }.toMutableSet()
+        val railActive = exactActive.filter { it.startsWith(RAIL_SERVICE_PREFIX) }.toMutableSet()
+
+        if (ztmActive.isEmpty()) {
+            val ztmCalendars = calendars.filterNot { it.serviceId.startsWith(RAIL_SERVICE_PREFIX) }
+            val byDay = ztmCalendars.filter { cal ->
+                when (dayTypeOverride) {
+                    TimetableDayType.WEEKDAY -> cal.monday || cal.tuesday || cal.wednesday || cal.thursday || cal.friday
+                    TimetableDayType.SATURDAY -> cal.saturday
+                    TimetableDayType.SUNDAY -> cal.sunday
+                    else -> matchesDayOfWeek(cal, date.dayOfWeek)
+                }
+            }.map { it.serviceId }
+            ztmActive.addAll(byDay.ifEmpty { ztmCalendars.map { it.serviceId } })
+        }
+
+        if (railActive.isEmpty()) {
+            val railCalendars = calendars.filter { it.serviceId.startsWith(RAIL_SERVICE_PREFIX) }
+            val byCal = railCalendars.filter { cal ->
+                when (dayTypeOverride) {
+                    TimetableDayType.WEEKDAY -> cal.monday || cal.tuesday || cal.wednesday || cal.thursday || cal.friday
+                    TimetableDayType.SATURDAY -> cal.saturday
+                    TimetableDayType.SUNDAY -> cal.sunday
+                    else -> matchesDayOfWeek(cal, date.dayOfWeek)
+                }
+            }.map { it.serviceId }
+            railActive.addAll(byCal)
+            if (railActive.isEmpty()) {
+                for (delta in listOf(7L, -7L, 1L, -1L)) {
+                    val probeDate = date.plusDays(delta)
+                    val probeDates = dao.getCalendarDatesForDate(ServiceCalendarResolver.toYyyymmdd(probeDate))
+                    val probeRail = probeDates
+                        .filter { it.serviceId.startsWith(RAIL_SERVICE_PREFIX) && it.exceptionType == ServiceCalendarResolver.EXCEPTION_ADDED }
+                        .map { it.serviceId }
+                    if (probeRail.isNotEmpty()) {
+                        railActive.addAll(probeRail)
+                        break
+                    }
+                }
+            }
+        }
+
+        return (ztmActive + railActive).toList()
+    }
+
     /**
      * Возвращает только те маршруты, которые реально курсируют в указанный день [date].
      */
     suspend fun getAllRoutesSorted(date: LocalDate = LocalDate.now(WARSAW_ZONE)): List<RouteEntity> = withContext(Dispatchers.IO) {
-        val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
-        val calendars = dao.getAllCalendars()
-        val calendarDates = dao.getCalendarDatesForDate(dateInt)
-        val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
-            date = date,
-            calendars = calendars,
-            calendarDatesForDate = calendarDates
-        ).ifEmpty {
-            calendars.filter { matchesDayOfWeek(it, date.dayOfWeek) }.map { it.serviceId }.toSet()
-        }.toList()
+        val activeServices = resolveActiveServicesForDate(date)
 
         val activeRouteIds = if (activeServices.isNotEmpty()) {
             activeServices.chunked(500).flatMap { chunk ->
@@ -427,7 +499,7 @@ class TransitGraphRepository(
         val filtered = if (activeRouteIds.isNotEmpty()) {
             allRoutes.filter { it.routeId in activeRouteIds }
         } else {
-            emptyList()
+            allRoutes
         }
 
         filtered.sortedWith(
@@ -450,24 +522,7 @@ class TransitGraphRepository(
             TimetableDayType.SATURDAY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SATURDAY))
             TimetableDayType.SUNDAY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
         }
-        val dateInt = ServiceCalendarResolver.toYyyymmdd(targetDate)
-        val calendars = dao.getAllCalendars()
-        val calendarDates = dao.getCalendarDatesForDate(dateInt)
-        val activeServices = ServiceCalendarResolver.resolveActiveServiceIds(
-            date = targetDate,
-            calendars = calendars,
-            calendarDatesForDate = calendarDates
-        ).ifEmpty {
-            // Строго по нужному дню недели — маршруты других дней не подмешиваем
-            calendars.filter { cal ->
-                when (dayType) {
-                    TimetableDayType.TODAY -> matchesDayOfWeek(cal, targetDate.dayOfWeek)
-                    TimetableDayType.WEEKDAY -> cal.monday || cal.tuesday || cal.wednesday || cal.thursday || cal.friday
-                    TimetableDayType.SATURDAY -> cal.saturday
-                    TimetableDayType.SUNDAY -> cal.sunday
-                }
-            }.map { it.serviceId }.toSet()
-        }.toList()
+        val activeServices = resolveActiveServicesForDate(targetDate, dayTypeOverride = dayType)
 
         if (activeServices.isEmpty()) return@withContext emptyList()
 

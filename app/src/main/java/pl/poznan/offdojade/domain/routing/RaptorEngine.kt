@@ -837,6 +837,7 @@ class RaptorEngine {
         tripSettings: TripSettings
     ): List<OriginAccess> {
         val accesses = ArrayList<OriginAccess>(16)
+        val walkSpeed = tripSettings.walkingPace.speedMps
         for (i in 0 until data.stopCount) {
             if (!tripSettings.isZoneAllowed(data.stopZones[i])) continue
             val dist = GeoUtils.haversineMeters(lat, lon, data.stopLats[i], data.stopLons[i])
@@ -844,7 +845,7 @@ class RaptorEngine {
                 accesses.add(
                     OriginAccess(
                         stopIdx = i,
-                        walkSeconds = GeoUtils.walkingTimeSeconds(dist),
+                        walkSeconds = GeoUtils.walkingTimeSeconds(dist, walkSpeed),
                         distanceMeters = dist.roundToInt()
                     )
                 )
@@ -856,7 +857,7 @@ class RaptorEngine {
                 .ifEmpty { (0 until data.stopCount).toList() }
                 .map { i ->
                     val dist = GeoUtils.haversineMeters(lat, lon, data.stopLats[i], data.stopLons[i])
-                    OriginAccess(i, GeoUtils.walkingTimeSeconds(dist), dist.roundToInt())
+                    OriginAccess(i, GeoUtils.walkingTimeSeconds(dist, walkSpeed), dist.roundToInt())
                 }
                 .sortedBy { it.distanceMeters }
                 .take(3)
@@ -881,8 +882,9 @@ class RaptorEngine {
         val originAccesses: List<OriginAccess>
         val resolvedOriginLat: Double
         val resolvedOriginLon: Double
-        val originNearbyMeters = if (isEveningOrNight) 650.0 else 500.0
-        val targetEgressMeters = if (isEveningOrNight) 450.0 else 300.0
+        val baseWalkMax = tripSettings.maxOriginWalkMeters.toDouble().coerceIn(300.0, 1000.0)
+        val originNearbyMeters = if (isEveningOrNight) maxOf(baseWalkMax, 650.0) else minOf(baseWalkMax, 500.0)
+        val targetEgressMeters = if (isEveningOrNight) 450.0 else minOf(baseWalkMax, 300.0)
 
         if (!originStopId.isNullOrBlank()) {
             val originIndices = data.findSiblingStopIndices(originStopId)
@@ -909,7 +911,7 @@ class RaptorEngine {
                 data = data,
                 lat = originLat,
                 lon = originLon,
-                maxMeters = if (isEveningOrNight) maxOf(AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS, 750.0) else AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS,
+                maxMeters = if (isEveningOrNight) maxOf(baseWalkMax, 750.0) else baseWalkMax,
                 tripSettings = tripSettings
             )
             if (originAccesses.isEmpty()) return null
@@ -944,7 +946,7 @@ class RaptorEngine {
                 data = data,
                 lat = targetLat,
                 lon = targetLon,
-                maxMeters = AppConfig.ORIGIN_WALK_MAX_DISTANCE_METERS,
+                maxMeters = baseWalkMax,
                 tripSettings = tripSettings
             )
             if (egressAccesses.isEmpty()) return null

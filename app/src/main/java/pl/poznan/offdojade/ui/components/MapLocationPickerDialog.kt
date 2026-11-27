@@ -136,6 +136,7 @@ fun MapLocationPickerDialog(
         }
     }
 
+    val showLandmarks = LocalShowMapLandmarks.current
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
@@ -218,7 +219,9 @@ fun MapLocationPickerDialog(
                             }
 
                             map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                                OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                                if (showLandmarks) {
+                                    OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                                }
                                 syncStopsSource(loadedStyle, latestStopGroups)
                             }
                         } else {
@@ -442,6 +445,7 @@ fun TimetableStopsMapView(
         }
     }
 
+    val showLandmarks = LocalShowMapLandmarks.current
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
@@ -549,7 +553,9 @@ fun TimetableStopsMapView(
                     if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
                         appliedStyleJson = styleJson
                         map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                            OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                            if (showLandmarks) {
+                                OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                            }
                             updateOverlay(loadedStyle)
                         }
                     } else {

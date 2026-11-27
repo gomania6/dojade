@@ -76,6 +76,7 @@ import pl.poznan.offdojade.data.realtime.RealtimeRepository
 import pl.poznan.offdojade.domain.model.AppSettings
 import pl.poznan.offdojade.domain.model.ThemeMode
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
+import pl.poznan.offdojade.ui.components.LocalShowMapLandmarks
 import pl.poznan.offdojade.ui.details.RouteDetailsScreen
 import pl.poznan.offdojade.ui.home.HomeScreen
 import pl.poznan.offdojade.ui.localization.LocalStrings
@@ -95,19 +96,31 @@ class MainActivity : ComponentActivity() {
     private val prebuiltDbDownloader: PrebuiltDbDownloader by inject()
     private val gtfsImporter: GtfsImporter by inject()
 
+    @Volatile
+    private var realtimeIntervalMs: Long = AppConfig.GTFS_RT_POLL_INTERVAL_MS
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         lifecycleScope.launch {
+            preferencesRepository.appSettings.collect { settings ->
+                realtimeIntervalMs = settings.realtimePollIntervalSec * 1_000L
+            }
+        }
+
+        lifecycleScope.launch {
             transitGraphRepository.ensureLoadedForToday()
             transitGraphRepository.searchStopGroups("", limit = 1)
-            checkAndAutoUpdateScheduleInBackground()
+            val settings = preferencesRepository.getAppSettings()
+            if (settings.autoUpdateSchedule) {
+                checkAndAutoUpdateScheduleInBackground()
+            }
         }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                realtimeRepository.pollLoop()
+                realtimeRepository.pollLoop(intervalMsProvider = { realtimeIntervalMs })
             }
         }
 
@@ -136,7 +149,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            CompositionLocalProvider(LocalStrings provides stringsFor(appSettings.language)) {
+            CompositionLocalProvider(
+                LocalStrings provides stringsFor(appSettings.language),
+                LocalShowMapLandmarks provides appSettings.showMapLandmarks
+            ) {
                 OffDojadeTheme(darkTheme = darkTheme) {
                     val onboardingDone by preferencesRepository.onboardingCompleted
                         .collectAsStateWithLifecycle(initialValue = null)

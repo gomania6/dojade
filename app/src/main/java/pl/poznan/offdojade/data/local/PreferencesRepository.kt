@@ -22,6 +22,7 @@ import pl.poznan.offdojade.domain.model.RoutePreference
 import pl.poznan.offdojade.domain.model.ThemeMode
 import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.model.TripSettings
+import pl.poznan.offdojade.domain.model.WalkingPace
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "offdojade_prefs")
 
@@ -107,6 +108,11 @@ class PreferencesRepository(private val context: Context) {
         val LOW_FLOOR_ONLY = booleanPreferencesKey("low_floor_only")
         val MIN_TRANSFER_MINUTES = intPreferencesKey("min_transfer_minutes")
         val IS_ULGOWY_TICKET = booleanPreferencesKey("is_ulgowy_ticket")
+        val WALKING_PACE = stringPreferencesKey("walking_pace")
+        val MAX_ORIGIN_WALK_METERS = intPreferencesKey("max_origin_walk_meters")
+        val REALTIME_POLL_INTERVAL_SEC = intPreferencesKey("realtime_poll_interval_sec")
+        val AUTO_UPDATE_SCHEDULE = booleanPreferencesKey("auto_update_schedule")
+        val SHOW_MAP_LANDMARKS = booleanPreferencesKey("show_map_landmarks")
 
         // History
         val TRIP_HISTORY_JSON = stringPreferencesKey("trip_history_json")
@@ -225,8 +231,13 @@ class PreferencesRepository(private val context: Context) {
                 excludedZones = prefs[Keys.EXCLUDED_ZONES] ?: emptySet(),
                 lowFloorOnly = prefs[Keys.LOW_FLOOR_ONLY] ?: false,
                 minTransferMinutes = prefs[Keys.MIN_TRANSFER_MINUTES] ?: 2,
-                isUlgowyTicket = prefs[Keys.IS_ULGOWY_TICKET] ?: false
-            )
+                isUlgowyTicket = prefs[Keys.IS_ULGOWY_TICKET] ?: false,
+                walkingPace = WalkingPace.fromKey(prefs[Keys.WALKING_PACE]),
+                maxOriginWalkMeters = (prefs[Keys.MAX_ORIGIN_WALK_METERS] ?: 600).coerceIn(300, 1000)
+            ),
+            realtimePollIntervalSec = prefs[Keys.REALTIME_POLL_INTERVAL_SEC] ?: 20,
+            autoUpdateSchedule = prefs[Keys.AUTO_UPDATE_SCHEDULE] ?: true,
+            showMapLandmarks = prefs[Keys.SHOW_MAP_LANDMARKS] ?: true
         )
     }
 
@@ -352,6 +363,26 @@ class PreferencesRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.IS_ULGOWY_TICKET] = isUlgowy }
     }
 
+    suspend fun setWalkingPace(pace: WalkingPace) {
+        context.dataStore.edit { it[Keys.WALKING_PACE] = pace.key }
+    }
+
+    suspend fun setMaxOriginWalkMeters(meters: Int) {
+        context.dataStore.edit { it[Keys.MAX_ORIGIN_WALK_METERS] = meters.coerceIn(300, 1000) }
+    }
+
+    suspend fun setRealtimePollIntervalSec(seconds: Int) {
+        context.dataStore.edit { it[Keys.REALTIME_POLL_INTERVAL_SEC] = seconds.coerceIn(0, 120) }
+    }
+
+    suspend fun setAutoUpdateSchedule(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTO_UPDATE_SCHEDULE] = enabled }
+    }
+
+    suspend fun setShowMapLandmarks(show: Boolean) {
+        context.dataStore.edit { it[Keys.SHOW_MAP_LANDMARKS] = show }
+    }
+
     suspend fun resetTripSettings() {
         context.dataStore.edit { prefs ->
             prefs[Keys.ROUTE_PREFERENCE] = RoutePreference.BEST.key
@@ -363,6 +394,8 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.EXCLUDED_ZONES] = emptySet()
             prefs[Keys.LOW_FLOOR_ONLY] = false
             prefs[Keys.MIN_TRANSFER_MINUTES] = 2
+            prefs[Keys.WALKING_PACE] = WalkingPace.NORMAL.key
+            prefs[Keys.MAX_ORIGIN_WALK_METERS] = 600
         }
     }
 

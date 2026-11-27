@@ -27,9 +27,13 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -62,6 +66,7 @@ import pl.poznan.offdojade.domain.model.AppLanguage
 import pl.poznan.offdojade.domain.model.RoutePreference
 import pl.poznan.offdojade.domain.model.ThemeMode
 import pl.poznan.offdojade.domain.model.TransportMode
+import pl.poznan.offdojade.domain.model.WalkingPace
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import kotlin.math.roundToInt
 
@@ -74,6 +79,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = koinViewModel()
 ) {
     val settings by viewModel.appSettings.collectAsStateWithLifecycle()
+    val storage by viewModel.storageStatus.collectAsStateWithLifecycle()
     val trip = settings.tripSettings
     val s = LocalStrings.current
 
@@ -392,6 +398,66 @@ fun SettingsScreen(
                             steps = 14
                         )
 
+                        HorizontalDivider()
+
+                        // Темп ходьбы пешехода
+                        Text(
+                            text = s.walkingPaceLabel,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            WalkingPace.entries.forEach { pace ->
+                                val label = when (pace) {
+                                    WalkingPace.SLOW -> s.paceSlow
+                                    WalkingPace.NORMAL -> s.paceNormal
+                                    WalkingPace.FAST -> s.paceFast
+                                }
+                                FilterChip(
+                                    selected = trip.walkingPace == pace,
+                                    onClick = { viewModel.setWalkingPace(pace) },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        // Максимальная дистанция пешком до остановки (300..1000 м)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = s.maxWalkDistanceLabel,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${trip.maxOriginWalkMeters} ${s.metersShort}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        Slider(
+                            value = trip.maxOriginWalkMeters.toFloat(),
+                            onValueChange = {
+                                val snapped = ((it / 100f).roundToInt() * 100).coerceIn(300, 1000)
+                                viewModel.setMaxOriginWalkMeters(snapped)
+                            },
+                            valueRange = 300f..1000f,
+                            steps = 6
+                        )
+
                         OutlinedButton(
                             onClick = viewModel::resetTripSettings,
                             modifier = Modifier.fillMaxWidth(),
@@ -405,30 +471,137 @@ fun SettingsScreen(
                 }
             }
 
-            // === 3. Данные и карта ===
+            // === 3. Данные, карта и живое отслеживание ===
             item {
                 SectionHeader(s.dataAndMapSection)
                 Spacer(Modifier.height(8.dp))
                 Card(
-                    onClick = onOpenSyncAndMap,
-                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Icon(Icons.Default.CloudSync, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Text(
-                            text = s.openSyncAndMapScreen,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f)
+                        // Интервал обновления живых данных GTFS-RT (экономия батареи/трафика)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Sensors, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = s.liveRefreshIntervalLabel,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(15, 20, 30, 60, 0).forEach { sec ->
+                                FilterChip(
+                                    selected = settings.realtimePollIntervalSec == sec,
+                                    onClick = { viewModel.setRealtimePollIntervalSec(sec) },
+                                    label = {
+                                        Text(if (sec == 0) s.liveRefreshOff else "$sec ${s.secShort}")
+                                    }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        // Автообновление расписания при запуске
+                        SettingsSwitchRow(
+                            title = s.autoUpdateScheduleTitle,
+                            subtitle = s.autoUpdateScheduleDesc,
+                            checked = settings.autoUpdateSchedule,
+                            onCheckedChange = viewModel::setAutoUpdateSchedule
                         )
+
+                        HorizontalDivider()
+
+                        // Ориентиры и университеты на оффлайн-карте
+                        SettingsSwitchRow(
+                            title = s.showMapLandmarksTitle,
+                            subtitle = s.showMapLandmarksDesc,
+                            checked = settings.showMapLandmarks,
+                            onCheckedChange = viewModel::setShowMapLandmarks,
+                            leadingIcon = {
+                                Icon(Icons.Default.Place, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        )
+
+                        HorizontalDivider()
+
+                        // Статус оффлайн-базы и карты + пересборка кэша
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Default.Storage, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = s.scheduleInfoSummary(storage.stopsCount, storage.tripsCount, storage.buildDate),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = storage.mapSizeMb?.let { s.mapInfoLoaded(it) } ?: s.mapInfoNotDownloaded,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (storage.cacheRebuiltNotice) {
+                                    Text(
+                                        text = s.graphCacheRebuilt,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = viewModel::rebuildGraphCache,
+                                enabled = !storage.isRebuildingCache,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                if (storage.isRebuildingCache) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Text(
+                                        text = s.rebuildGraphCacheAction,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = onOpenSyncAndMap)
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.CloudSync, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = s.openSyncAndMapScreen,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
             }

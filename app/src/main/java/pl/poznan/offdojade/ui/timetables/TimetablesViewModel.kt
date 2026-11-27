@@ -75,6 +75,14 @@ class TimetablesViewModel(
 
     init {
         loadRoutes()
+        // Автоматически обновляем список линий, как только граф/расписание догрузилось или обновилось в фоне
+        viewModelScope.launch {
+            transitGraphRepository.graph.collect { graph ->
+                if (graph != null) {
+                    loadRoutes()
+                }
+            }
+        }
     }
 
     fun loadRoutes() {

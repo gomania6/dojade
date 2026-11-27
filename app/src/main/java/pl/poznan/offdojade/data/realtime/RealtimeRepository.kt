@@ -54,13 +54,24 @@ class RealtimeRepository(
     val vehicles: StateFlow<List<LiveVehicle>> = _vehicles.asStateFlow()
 
     /**
-     * Запускает бесконечный цикл опроса каждые 20 секунд (вызывать внутри `repeatOnLifecycle(STARTED)`).
+     * Запускает бесконечный цикл опроса с настраиваемым интервалом [intervalMsProvider]
+     * (если интервал <= 0 — режим экономии трафика / оффлайн без опроса GTFS-RT).
      */
-    suspend fun pollLoop() {
+    suspend fun pollLoop(
+        intervalMsProvider: () -> Long = { AppConfig.GTFS_RT_POLL_INTERVAL_MS }
+    ) {
         withContext(Dispatchers.IO) {
             while (isActive) {
-                refreshOnce()
-                delay(AppConfig.GTFS_RT_POLL_INTERVAL_MS)
+                val intervalMs = intervalMsProvider()
+                if (intervalMs <= 0L) {
+                    if (_status.value !is RealtimeStatus.Offline) {
+                        _status.value = RealtimeStatus.Offline("Оффлайн-режим (настройки)")
+                    }
+                    delay(5_000L)
+                } else {
+                    refreshOnce()
+                    delay(intervalMs.coerceAtLeast(10_000L))
+                }
             }
         }
     }

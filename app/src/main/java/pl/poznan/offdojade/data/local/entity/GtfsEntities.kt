@@ -104,11 +104,7 @@ data class TripEntity(
 
 @Entity(
     tableName = "stop_times",
-    primaryKeys = ["trip_id", "stop_sequence"],
-    indices = [
-        Index(value = ["stop_id"]),
-        Index(value = ["trip_id"])
-    ]
+    primaryKeys = ["trip_id", "stop_sequence"]
 )
 data class StopTimeEntity(
     @ColumnInfo(name = "trip_id") val tripId: String,
@@ -123,8 +119,7 @@ data class StopTimeEntity(
 
 @Entity(
     tableName = "shapes",
-    primaryKeys = ["shape_id", "sequence"],
-    indices = [Index(value = ["shape_id"])]
+    primaryKeys = ["shape_id", "sequence"]
 )
 data class ShapePointEntity(
     @ColumnInfo(name = "shape_id") val shapeId: String,
@@ -135,8 +130,7 @@ data class ShapePointEntity(
 
 @Entity(
     tableName = "transfers",
-    primaryKeys = ["from_stop_id", "to_stop_id"],
-    indices = [Index(value = ["from_stop_id"])]
+    primaryKeys = ["from_stop_id", "to_stop_id"]
 )
 data class TransferEntity(
     @ColumnInfo(name = "from_stop_id") val fromStopId: String,

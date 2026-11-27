@@ -82,16 +82,18 @@ class OnboardingViewModel(
                 )
             }
             if (!dbHasData) {
-                startGtfsSync()
+                // Сначала скачиваем расписание на полной скорости канала (не деля трафик с 90 МБ картой),
+                // а оффлайн-карту автоматически подхватываем сразу после готовности расписания
+                startGtfsSync(autoStartMapAfter = !mapExists)
             } else {
                 // Прогреваем граф и индекс остановок пока пользователь на экране ознакомления
                 viewModelScope.launch {
                     transitGraphRepository.ensureLoadedForToday()
                     transitGraphRepository.searchStopGroups("", limit = 1)
                 }
-            }
-            if (!mapExists) {
-                startMapDownload()
+                if (!mapExists) {
+                    startMapDownload()
+                }
             }
         }
     }
@@ -144,7 +146,7 @@ class OnboardingViewModel(
         }
     }
 
-    fun startGtfsSync() {
+    fun startGtfsSync(autoStartMapAfter: Boolean = false) {
         if (gtfsJob?.isActive == true) return
         gtfsJob = viewModelScope.launch {
             _uiState.update {
@@ -189,7 +191,7 @@ class OnboardingViewModel(
             }
 
             if (prebuiltSucceeded) {
-                finalizeGraphReload()
+                finalizeGraphReload(autoStartMapAfter)
                 return@launch
             }
 
@@ -213,13 +215,13 @@ class OnboardingViewModel(
                         )
                     }
                     if (progress.isFinished) {
-                        finalizeGraphReload()
+                        finalizeGraphReload(autoStartMapAfter)
                     }
                 }
         }
     }
 
-    private suspend fun finalizeGraphReload() {
+    private suspend fun finalizeGraphReload(autoStartMapAfter: Boolean = false) {
         _uiState.update {
             it.copy(
                 gtfsStageType = OnboardingGtfsStage.BUILDING_GRAPH,
@@ -227,7 +229,6 @@ class OnboardingViewModel(
             )
         }
         transitGraphRepository.reloadForToday()
-        transitGraphRepository.searchStopGroups("", limit = 1)
         preferencesRepository.setOnboardingCompleted(true)
         _uiState.update {
             it.copy(
@@ -237,6 +238,9 @@ class OnboardingViewModel(
                 gtfsStageType = OnboardingGtfsStage.READY_OFFLINE,
                 gtfsStageCustom = ""
             )
+        }
+        if (autoStartMapAfter && !_uiState.value.mapDownloaded && !_uiState.value.mapSkipped) {
+            startMapDownload()
         }
     }
 
