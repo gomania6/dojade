@@ -130,6 +130,9 @@ class OnboardingViewModel(
                             mapErrorIsDefault = false
                         )
                     }
+                    if (progress.isCompleted && _uiState.value.gtfsReady) {
+                        preferencesRepository.setOnboardingCompleted(true)
+                    }
                 }
         }
     }
@@ -171,6 +174,8 @@ class OnboardingViewModel(
             }
 
             var prebuiltSucceeded = false
+            var prebuiltError: String? = null
+            val hadExistingData = transitGraphRepository.hasDatabaseData()
             if (AppConfig.isPrebuiltScheduleConfigured()) {
                 try {
                     prebuiltDbDownloader.syncFromGitHubReleases(forceDownload = false).collect { progress ->
@@ -186,18 +191,38 @@ class OnboardingViewModel(
                             prebuiltSucceeded = true
                         }
                     }
-                } catch (_: Exception) {
-                    _uiState.update {
-                        it.copy(
-                            gtfsStageType = OnboardingGtfsStage.FALLBACK_DIRECT,
-                            gtfsStageCustom = ""
-                        )
+                } catch (e: Exception) {
+                    prebuiltError = e.localizedMessage
+                    if (!hadExistingData) {
+                        _uiState.update {
+                            it.copy(
+                                gtfsStageType = OnboardingGtfsStage.FALLBACK_DIRECT,
+                                gtfsStageCustom = ""
+                            )
+                        }
                     }
                 }
             }
 
             if (prebuiltSucceeded) {
                 finalizeGraphReload(preferPrebuiltCache = true)
+                return@launch
+            }
+
+            // Если база с поездами уже есть, не перезаписываем её ZTM-only импортом при ошибке GitHub —
+            // показываем ошибку пользователю, чтобы он мог повторить загрузку без потери электричек
+            if (hadExistingData && AppConfig.isPrebuiltScheduleConfigured()) {
+                _uiState.update {
+                    it.copy(
+                        gtfsSyncing = false,
+                        gtfsReady = true,
+                        gtfsProgress = 1f,
+                        gtfsStageType = OnboardingGtfsStage.ALREADY_LOADED,
+                        gtfsStageCustom = "",
+                        gtfsError = prebuiltError,
+                        gtfsErrorIsDefault = prebuiltError.isNullOrBlank()
+                    )
+                }
                 return@launch
             }
 
@@ -235,7 +260,9 @@ class OnboardingViewModel(
             )
         }
         transitGraphRepository.reloadForToday(preferDiskCache = preferPrebuiltCache)
-        preferencesRepository.setOnboardingCompleted(true)
+        if (_uiState.value.mapDownloaded || _uiState.value.mapSkipped) {
+            preferencesRepository.setOnboardingCompleted(true)
+        }
         _uiState.update {
             it.copy(
                 gtfsSyncing = false,

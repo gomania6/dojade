@@ -485,6 +485,34 @@ class TransitGraphRepository(
                     }
                 }
             }
+            // Надёжный глобальный fallback для электричек (если устройство офлайн > 7 дней или даты сдвинулись):
+            // выбираем ближайшую доступную дату в calendar_dates (с приоритетом того же дня недели)
+            if (railActive.isEmpty()) {
+                val availableDates = dao.getDistinctRailCalendarDates()
+                    .mapNotNull { ymd ->
+                        runCatching { LocalDate.of(ymd / 10_000, (ymd / 100) % 100, ymd % 100) to ymd }.getOrNull()
+                    }
+                if (availableDates.isNotEmpty()) {
+                    val matchingDow = availableDates.filter { (d, _) ->
+                        when (dayTypeOverride) {
+                            TimetableDayType.WEEKDAY -> d.dayOfWeek.value in 1..5
+                            TimetableDayType.SATURDAY -> d.dayOfWeek == DayOfWeek.SATURDAY
+                            TimetableDayType.SUNDAY -> d.dayOfWeek == DayOfWeek.SUNDAY
+                            else -> d.dayOfWeek == date.dayOfWeek
+                        }
+                    }
+                    val pool = matchingDow.ifEmpty { availableDates }
+                    val nearestYmd = pool.minByOrNull { (d, _) ->
+                        kotlin.math.abs(java.time.temporal.ChronoUnit.DAYS.between(date, d))
+                    }?.second
+                    if (nearestYmd != null) {
+                        val fallbackRail = dao.getCalendarDatesForDate(nearestYmd)
+                            .filter { it.serviceId.startsWith(RAIL_SERVICE_PREFIX) && it.exceptionType == ServiceCalendarResolver.EXCEPTION_ADDED }
+                            .map { it.serviceId }
+                        railActive.addAll(fallbackRail)
+                    }
+                }
+            }
         }
 
         return (ztmActive + railActive).toList()
@@ -546,8 +574,38 @@ class TransitGraphRepository(
         val stopById = dao.getAllStops().associateBy { it.stopId }
         val stByTrip = stopTimes.groupBy { it.tripId }
 
-        val byDirection = trips.groupBy { it.directionId }
-        byDirection.entries.sortedBy { it.key }.mapNotNull { (dirId, dirTrips) ->
+        val isRailRoute = route.routeType == 2 ||
+            route.routeType == 100 ||
+            route.routeType == 109 ||
+            route.routeId.startsWith(RAIL_SERVICE_PREFIX)
+
+        // Для ж/д линий (REG, KW, PKM1..5) один direction_id часто объединяет десятки разных веток —
+        // группируем их по конечному направлению (headsign), чтобы не терялись станции и рейсы
+        val groupedDirections: List<Pair<Int, List<pl.poznan.offdojade.data.local.entity.TripEntity>>> =
+            if (isRailRoute) {
+                trips.groupBy { trip ->
+                    val hs = trip.tripHeadsign.trim()
+                    if (hs.isNotEmpty()) {
+                        hs
+                    } else {
+                        val lastStopId = stByTrip[trip.tripId]?.maxByOrNull { it.stopSequence }?.stopId
+                        stopById[lastStopId]?.stopName ?: "→"
+                    }
+                }
+                    .entries
+                    .sortedWith(
+                        compareByDescending<Map.Entry<String, List<pl.poznan.offdojade.data.local.entity.TripEntity>>> { it.value.size }
+                            .thenBy { it.key }
+                    )
+                    .mapIndexed { idx, entry -> idx to entry.value }
+            } else {
+                trips.groupBy { it.directionId }
+                    .entries
+                    .sortedBy { it.key }
+                    .map { it.key to it.value }
+            }
+
+        groupedDirections.mapNotNull { (dirId, dirTrips) ->
             // Находим самый длинный рейс направления для канонического списка остановок
             val canonicalTrip = dirTrips.maxByOrNull { stByTrip[it.tripId]?.size ?: 0 } ?: return@mapNotNull null
             val canonicalStops = stByTrip[canonicalTrip.tripId]

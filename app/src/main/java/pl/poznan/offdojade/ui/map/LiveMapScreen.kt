@@ -108,6 +108,10 @@ fun LiveMapScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val realtimeStatus by viewModel.realtimeStatus.collectAsStateWithLifecycle()
     val s = LocalStrings.current
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshLocalMapFile()
+    }
     val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }

@@ -717,6 +717,20 @@ def _resolve_active_services_for_date(
                 if probe_rail:
                     rail_active.update(probe_rail)
                     break
+        if not rail_active:
+            avail_rail_dates = [
+                (dt.date(d // 10000, (d // 100) % 100, d % 100), d)
+                for d, entries in cal_dates_by_date.items()
+                if any(sid.startswith(RAIL_ID_PREFIX) and ex_type == 1 for sid, ex_type in entries)
+            ]
+            if avail_rail_dates:
+                same_dow = [pair for pair in avail_rail_dates if pair[0].weekday() == dow_idx]
+                pool = same_dow if same_dow else avail_rail_dates
+                nearest_d = min(pool, key=lambda pair: abs((pair[0] - target_date).days))[1]
+                rail_active.update(
+                    sid for sid, ex_type in cal_dates_by_date.get(nearest_d, ())
+                    if sid.startswith(RAIL_ID_PREFIX) and ex_type == 1
+                )
 
     return sorted(ztm_active | rail_active)
 

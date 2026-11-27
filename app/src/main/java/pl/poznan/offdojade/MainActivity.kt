@@ -230,8 +230,10 @@ class MainActivity : ComponentActivity() {
                             prebuiltDbDownloader.syncFromGitHubReleases().collect()
                             transitGraphRepository.reloadForToday(preferDiskCache = true)
                         }
-                        return@runCatching
                     }
+                    // Если настроен предсобранный релиз GitHub (с электричками KW/Polregio) и база уже есть,
+                    // НЕ перезаписываем её в фоне через ZTM-only GtfsImporter при временной ошибке сети!
+                    if (hasData) return@runCatching
                 }
 
                 val headers = gtfsImporter.fetchRemoteHeaders() ?: return@runCatching

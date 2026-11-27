@@ -155,10 +155,16 @@ class LiveMapViewModel(
 
     fun refreshNow() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isRefreshing = true) }
+            val latestMapFile = mapDownloader.getLocalMapFile().takeIf { it.exists() && it.length() > 0L }
+            _uiState.update { it.copy(isRefreshing = true, localMapFile = latestMapFile) }
             runCatching { realtimeRepository.refreshOnce() }
             _uiState.update { it.copy(isRefreshing = false) }
         }
+    }
+
+    fun refreshLocalMapFile() {
+        val latestMapFile = mapDownloader.getLocalMapFile().takeIf { it.exists() && it.length() > 0L }
+        _uiState.update { it.copy(localMapFile = latestMapFile) }
     }
 
     fun refreshUserLocation(onLocated: (UserLocation) -> Unit = {}) {

@@ -33,6 +33,7 @@ import java.io.File
  */
 object RouteLegColors {
     const val NIGHT_BUS_HEX = "#EAEFF5"
+    const val RAIL_HEX = "#D32F2F"
 
     val HEX_PALETTE = listOf(
         "#3FA372", // 1-й сегмент: мягкий зелёный
@@ -46,8 +47,9 @@ object RouteLegColors {
     fun hexForLeg(
         transitLegIndex: Int,
         shortName: String = "",
-        isTram: Boolean = false
-    ): String = HEX_PALETTE[transitLegIndex.coerceAtLeast(0) % HEX_PALETTE.size]
+        isTram: Boolean = false,
+        isRail: Boolean = false
+    ): String = if (isRail) RAIL_HEX else HEX_PALETTE[transitLegIndex.coerceAtLeast(0) % HEX_PALETTE.size]
 }
 
 data class RouteShapePolyline(
@@ -228,7 +230,8 @@ class RouteDetailsViewModel(
                             val colorHex = RouteLegColors.hexForLeg(
                                 transitLegIndex = transitLegIndex,
                                 shortName = leg.routeShortName,
-                                isTram = leg.isTram
+                                isTram = leg.isTram,
+                                isRail = leg.isRail
                             )
                             val rawShape = transitGraphRepository.getShapePoints(leg.shapeId)
                                 .map { it.lat to it.lon }

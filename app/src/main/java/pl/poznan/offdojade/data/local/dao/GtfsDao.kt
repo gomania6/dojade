@@ -127,6 +127,9 @@ interface GtfsDao {
     @Query("SELECT * FROM calendar_dates WHERE date = :dateYyyymmdd")
     suspend fun getCalendarDatesForDate(dateYyyymmdd: Int): List<CalendarDateEntity>
 
+    @Query("SELECT DISTINCT date FROM calendar_dates WHERE service_id LIKE 'rail_%' AND exception_type = 1 ORDER BY date ASC")
+    suspend fun getDistinctRailCalendarDates(): List<Int>
+
     @Query("SELECT * FROM transfers")
     suspend fun getAllTransfers(): List<TransferEntity>
 

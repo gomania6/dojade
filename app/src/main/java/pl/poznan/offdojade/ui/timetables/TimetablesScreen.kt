@@ -180,7 +180,7 @@ fun TimetablesScreen(
                     if (state.selectedRoute != null) {
                         RouteStopsView(
                             state = state,
-                            localMapFile = remember { viewModel.getLocalMapFile() },
+                            localMapFile = remember(state.selectedRoute?.routeId) { viewModel.getLocalMapFile() },
                             onSelectDayType = viewModel::selectDayType,
                             onSelectDirection = viewModel::selectDirection,
                             onSelectStop = viewModel::selectStop,

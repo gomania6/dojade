@@ -44,51 +44,50 @@ object RaptorDataCache {
             val dateCount = inp.readInt()
             if (dateCount <= 0 || dateCount > 31) return 0
 
-            val dateToGraphIdx = ArrayList<Pair<Int, Int>>(dateCount)
+            val datesByGraphIdx = HashMap<Int, MutableList<Int>>(dateCount)
             for (i in 0 until dateCount) {
                 val dateYyyymmdd = inp.readInt()
                 val graphIdx = inp.readInt()
-                dateToGraphIdx.add(dateYyyymmdd to graphIdx)
+                datesByGraphIdx.getOrPut(graphIdx) { ArrayList(2) }.add(dateYyyymmdd)
             }
 
             val uniqueCount = inp.readInt()
             if (uniqueCount <= 0 || uniqueCount > 31) return 0
 
-            val payloads = ArrayList<ByteArray>(uniqueCount)
-            for (i in 0 until uniqueCount) {
-                val len = inp.readInt()
-                if (len < 32 || len > 96 * 1024 * 1024) return 0
-                val bytes = ByteArray(len)
-                inp.readFully(bytes)
-                // Проверяем заголовок вложенного файла ODRC v1
-                val pMagic = readBigEndianInt(bytes, 0)
-                val pVer = readBigEndianInt(bytes, 4)
-                if (pMagic != MAGIC || pVer != FORMAT_VERSION) return 0
-                payloads.add(bytes)
-            }
-
+            // Потоково читаем по одному уникальному графу за раз (~3.5 МБ пик ОЗУ вместо 22+ МБ)
             var installed = 0
-            for ((dateYyyymmdd, graphIdx) in dateToGraphIdx) {
-                val payload = payloads.getOrNull(graphIdx) ?: continue
-                // Патчим 8 байт dbFingerprint (offset 8..15) и 4 байта serviceDate (offset 16..19)
-                writeBigEndianLong(payload, 8, dbFingerprint)
-                writeBigEndianInt(payload, 16, dateYyyymmdd)
+            for (gIdx in 0 until uniqueCount) {
+                val len = inp.readInt()
+                if (len < 32 || len > 96 * 1024 * 1024) return installed
+                val payload = ByteArray(len)
+                inp.readFully(payload)
+                // Проверяем заголовок вложенного файла ODRC v1
+                val pMagic = readBigEndianInt(payload, 0)
+                val pVer = readBigEndianInt(payload, 4)
+                if (pMagic != MAGIC || pVer != FORMAT_VERSION) return installed
 
-                val targetFile = File(cacheDir, "raptor_graph_v1_$dateYyyymmdd.bin")
-                val tmpFile = File(cacheDir, "${targetFile.name}.tmp")
-                runCatching {
-                    BufferedOutputStream(FileOutputStream(tmpFile), 128 * 1024).use { out ->
-                        out.write(payload)
-                        out.flush()
+                val targetDates = datesByGraphIdx[gIdx].orEmpty()
+                for (dateYyyymmdd in targetDates) {
+                    // Патчим 8 байт dbFingerprint (offset 8..15) и 4 байта serviceDate (offset 16..19)
+                    writeBigEndianLong(payload, 8, dbFingerprint)
+                    writeBigEndianInt(payload, 16, dateYyyymmdd)
+
+                    val targetFile = File(cacheDir, "raptor_graph_v1_$dateYyyymmdd.bin")
+                    val tmpFile = File(cacheDir, "${targetFile.name}.tmp")
+                    runCatching {
+                        BufferedOutputStream(FileOutputStream(tmpFile), 128 * 1024).use { out ->
+                            out.write(payload)
+                            out.flush()
+                        }
+                        if (targetFile.exists()) targetFile.delete()
+                        if (tmpFile.renameTo(targetFile)) {
+                            installed++
+                        } else {
+                            tmpFile.delete()
+                        }
+                    }.onFailure {
+                        runCatching { tmpFile.delete() }
                     }
-                    if (targetFile.exists()) targetFile.delete()
-                    if (tmpFile.renameTo(targetFile)) {
-                        installed++
-                    } else {
-                        tmpFile.delete()
-                    }
-                }.onFailure {
-                    runCatching { tmpFile.delete() }
                 }
             }
             installed

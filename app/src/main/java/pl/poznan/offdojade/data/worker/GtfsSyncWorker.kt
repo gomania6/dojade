@@ -37,13 +37,17 @@ class GtfsSyncWorker(
     override suspend fun doWork(): Result {
         OffDojadeNotifications.showBackgroundSyncNotification(applicationContext)
         return try {
-            // 1. Приоритет: быстрый предсобранный SQLite из GitHub Actions (version.json + poznan_schedule.db.gz)
+            // 1. Приоритет: быстрый предсобранный SQLite + бандл RAPTOR из GitHub Actions (ZTM + электрички KW/Polregio)
             if (AppConfig.isPrebuiltScheduleConfigured()) {
                 val prebuiltOk = runCatching {
                     prebuiltDbDownloader.syncFromGitHubReleases(forceDownload = false).collect()
                     transitGraphRepository.reloadForToday(preferDiskCache = true)
                 }.isSuccess
                 if (prebuiltOk) return Result.success()
+                // Если база с поездами уже есть на устройстве, при временном сбое GitHub НЕ затираем её ZTM-only импортом
+                if (transitGraphRepository.hasDatabaseData()) {
+                    return Result.retry()
+                }
             }
 
             // 2. Fallback: прямое скачивание и потоковый парсинг GTFS ZIP с ZTM Poznań

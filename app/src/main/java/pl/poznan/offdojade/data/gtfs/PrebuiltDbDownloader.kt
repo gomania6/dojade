@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.DatabaseHolder
+import pl.poznan.offdojade.data.local.GtfsDatabase
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.domain.routing.RaptorDataCache
 import java.io.BufferedInputStream
@@ -78,6 +79,12 @@ class PrebuiltDbDownloader(
 
         val remote = fetchRemoteVersion()
             ?: throw IOException("Не удалось получить version.json из GitHub Releases")
+
+        if (remote.roomVersion > GtfsDatabase.SCHEMA_VERSION) {
+            throw IOException(
+                "База расписания на сервере (v${remote.roomVersion}) требует обновления приложения (поддерживается v${GtfsDatabase.SCHEMA_VERSION})"
+            )
+        }
 
         val localHash = preferencesRepository.getSyncMetadata().prebuiltDbSha256
         val dbHasData = databaseHolder.dao.getStopCount() > 0

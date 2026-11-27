@@ -30,4 +30,8 @@ import pl.poznan.offdojade.data.local.entity.TripEntity
 )
 abstract class GtfsDatabase : RoomDatabase() {
     abstract fun gtfsDao(): GtfsDao
+
+    companion object {
+        const val SCHEMA_VERSION = 4
+    }
 }
