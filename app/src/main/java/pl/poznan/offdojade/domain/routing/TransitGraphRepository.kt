@@ -83,7 +83,16 @@ class TransitGraphRepository(
         return loadOrRebuildForDate(date = today, forceRebuild = false)
     }
 
-    suspend fun reloadForToday(): RaptorData? = loadOrRebuildForDate(date = LocalDate.now(WARSAW_ZONE), forceRebuild = true)
+    suspend fun reloadForToday(preferDiskCache: Boolean = false): RaptorData? {
+        if (preferDiskCache) {
+            cachedStopGroups = null
+            cachedAlternateDayGraph = null
+            cachedRouteResults = null
+            _graph.value = null
+            return loadOrRebuildForDate(date = LocalDate.now(WARSAW_ZONE), forceRebuild = false)
+        }
+        return loadOrRebuildForDate(date = LocalDate.now(WARSAW_ZONE), forceRebuild = true)
+    }
 
     /**
      * Строит (и кэширует) граф RAPTOR на произвольную дату (например, на завтра),

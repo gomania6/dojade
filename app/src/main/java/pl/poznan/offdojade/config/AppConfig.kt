@@ -55,6 +55,10 @@ object AppConfig {
     const val SCHEDULE_DB_GZ_URL =
         "https://github.com/gomania6/pyrtransit/releases/download/schedule-latest/poznan_schedule.db.gz"
 
+    /** Предсобранный бинарный бандл готовых графов RAPTOR на ближайшие 7 дней (~1.5–2.5 МБ). */
+    const val SCHEDULE_RAPTOR_BUNDLE_URL =
+        "https://github.com/gomania6/pyrtransit/releases/download/schedule-latest/raptor_graphs.bundle.gz"
+
     /** Имя локального файла базы Room */
     const val DATABASE_NAME = "ztm_poznan_gtfs.db"
 

@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
                             localMeta.prebuiltDbSha256.equals(remote.sha256, ignoreCase = true)
                         if (!isSame) {
                             prebuiltDbDownloader.syncFromGitHubReleases().collect()
-                            transitGraphRepository.reloadForToday()
+                            transitGraphRepository.reloadForToday(preferDiskCache = true)
                         }
                         return@runCatching
                     }

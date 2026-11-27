@@ -23,11 +23,17 @@ import math
 import os
 import shutil
 import sqlite3
+import struct
 import tempfile
 import urllib.request
 import zipfile
 from collections import defaultdict
 from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 ZTM_GTFS_URL = "https://www.ztm.poznan.pl/pl/dla-deweloperow/getGTFSFile"
 POLISH_TRAINS_GTFS_URL = "https://mkuran.pl/gtfs/polish_trains.zip"
@@ -46,6 +52,13 @@ POZNAN_CENTER_LON = 16.9125
 ROOM_DB_VERSION = 4
 ROOM_IDENTITY_HASH = "dc4426e9d6a7b832b5461a17d983f804"
 SHAPE_SIMPLIFY_METERS = 8.0
+RAIL_WINDOW_DAYS = 21
+
+RAPTOR_CACHE_MAGIC = 0x4F445243  # "ODRC" (совпадает с RaptorDataCache.kt)
+RAPTOR_CACHE_VERSION = 1
+RAPTOR_BUNDLE_MAGIC = 0x4F445242  # "ODRB" (OffDojade Raptor Bundle)
+RAPTOR_BUNDLE_VERSION = 1
+RAPTOR_PREBUILD_DAYS = 7
 
 FOOTPATH_MAX_METERS = 300.0
 RAIL_FOOTPATH_MAX_METERS = 450.0
@@ -385,6 +398,39 @@ def merge_rail_gtfs(
             if tid and sid and rid in allowed_routes:
                 raw_trips[tid] = r
 
+        # Фильтруем ж/д сервисы по скользящему окну [вчера .. +21 день], чтобы не раздувать БД
+        # месяцами далёких/устаревших расписаний PKP (с безопасным fallback если окно пустое)
+        today_warsaw = get_warsaw_today()
+        win_start_int = int((today_warsaw - dt.timedelta(days=1)).strftime("%Y%m%d"))
+        win_end_int = int((today_warsaw + dt.timedelta(days=RAIL_WINDOW_DAYS)).strftime("%Y%m%d"))
+        window_service_ids: set[str] = set()
+        for r in read_zip_csv(zf, "calendar.txt"):
+            sid = r.get("service_id", "")
+            if not sid:
+                continue
+            try:
+                sd, ed = int(r["start_date"]), int(r["end_date"])
+            except (KeyError, ValueError):
+                continue
+            if ed >= win_start_int and sd <= win_end_int:
+                window_service_ids.add(sid)
+        for r in read_zip_csv(zf, "calendar_dates.txt"):
+            sid = r.get("service_id", "")
+            if not sid:
+                continue
+            try:
+                d_int = int(r["date"])
+                ex_type = int(r["exception_type"])
+            except (KeyError, ValueError):
+                continue
+            if ex_type == 1 and win_start_int <= d_int <= win_end_int:
+                window_service_ids.add(sid)
+
+        if window_service_ids:
+            filtered_trips = {tid: t for tid, t in raw_trips.items() if t["service_id"] in window_service_ids}
+            if filtered_trips:
+                raw_trips = filtered_trips
+
         trip_stop_times: dict[str, list[tuple[int, str, int, int]]] = defaultdict(list)
         for r in read_zip_csv(zf, "stop_times.txt"):
             tid = r.get("trip_id", "")
@@ -550,7 +596,7 @@ def merge_rail_gtfs(
                 simplified = simplify_shape_dp(pts)
                 pref_shid = RAIL_ID_PREFIX + shid
                 for seq, lat, lon in simplified:
-                    shape_batch.append((pref_shid, seq, lat, lon))
+                    shape_batch.append((pref_shid, seq, round(lat, 5), round(lon, 5)))
                 if len(shape_batch) >= 10_000:
                     cur.executemany("INSERT OR REPLACE INTO shapes VALUES (?, ?, ?, ?)", shape_batch)
                     shape_batch.clear()
@@ -558,6 +604,420 @@ def merge_rail_gtfs(
                 cur.executemany("INSERT OR REPLACE INTO shapes VALUES (?, ?, ?, ?)", shape_batch)
 
         return len(stops_rows), len(trips_rows)
+
+
+def get_warsaw_today() -> dt.date:
+    if ZoneInfo is not None:
+        try:
+            return dt.datetime.now(ZoneInfo("Europe/Warsaw")).date()
+        except Exception:
+            pass
+    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).date()
+
+
+def encode_java_utf(s: str) -> bytes:
+    """Кодирует строку в формат Java DataOutputStream.writeUTF (2-byte big-endian len + Modified UTF-8)."""
+    out = bytearray()
+    for ch in s:
+        cp = ord(ch)
+        if 0x0001 <= cp <= 0x007F:
+            out.append(cp)
+        elif cp == 0x0000 or (0x0080 <= cp <= 0x07FF):
+            out.append(0xC0 | ((cp >> 6) & 0x1F))
+            out.append(0x80 | (cp & 0x3F))
+        elif cp <= 0xFFFF:
+            out.append(0xE0 | ((cp >> 12) & 0x0F))
+            out.append(0x80 | ((cp >> 6) & 0x3F))
+            out.append(0x80 | (cp & 0x3F))
+        else:
+            # Surrogate pair in Modified UTF-8
+            cp2 = cp - 0x10000
+            hi = 0xD800 + (cp2 >> 10)
+            lo = 0xDC00 + (cp2 & 0x3FF)
+            for sur in (hi, lo):
+                out.append(0xE0 | ((sur >> 12) & 0x0F))
+                out.append(0x80 | ((sur >> 6) & 0x3F))
+                out.append(0x80 | (sur & 0x3F))
+    return struct.pack(">H", len(out)) + bytes(out)
+
+
+def _pack_int_array(values: list[int]) -> bytes:
+    if not values:
+        return struct.pack(">i", 0)
+    return struct.pack(f">i{len(values)}i", len(values), *values)
+
+
+def _pack_double_array(values: list[float]) -> bytes:
+    if not values:
+        return struct.pack(">i", 0)
+    return struct.pack(f">i{len(values)}d", len(values), *values)
+
+
+def _pack_string_array(values: list[str]) -> bytes:
+    parts = [struct.pack(">i", len(values))]
+    for s in values:
+        parts.append(encode_java_utf(s))
+    return b"".join(parts)
+
+
+def _pack_nullable_string_array(values: list[str | None]) -> bytes:
+    parts = [struct.pack(">i", len(values))]
+    for s in values:
+        if s is None:
+            parts.append(b"\x00")
+        else:
+            parts.append(b"\x01")
+            parts.append(encode_java_utf(s))
+    return b"".join(parts)
+
+
+def _resolve_active_services_for_date(
+    target_date: dt.date,
+    calendars: list[tuple],
+    cal_dates_by_date: dict[int, list[tuple[str, int]]],
+) -> list[str]:
+    """
+    Полный аналог TransitGraphRepository.resolveActiveServicesForDate:
+    резолвит ZTM и ж/д (`rail_`) независимо, с раздельными фолбэками.
+    """
+    date_int = int(target_date.strftime("%Y%m%d"))
+    dow_idx = target_date.weekday()  # 0=Mon .. 6=Sun
+
+    exact_active: set[str] = set()
+    for cal in calendars:
+        # (service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date)
+        if cal[8] <= date_int <= cal[9] and cal[1 + dow_idx] == 1:
+            exact_active.add(cal[0])
+
+    for sid, ex_type in cal_dates_by_date.get(date_int, ()):
+        if ex_type == 1:
+            exact_active.add(sid)
+        elif ex_type == 2:
+            exact_active.discard(sid)
+
+    ztm_active = {s for s in exact_active if not s.startswith(RAIL_ID_PREFIX)}
+    rail_active = {s for s in exact_active if s.startswith(RAIL_ID_PREFIX)}
+
+    if not ztm_active:
+        ztm_cals = [c for c in calendars if not c[0].startswith(RAIL_ID_PREFIX)]
+        by_dow = [c[0] for c in ztm_cals if c[1 + dow_idx] == 1]
+        ztm_active.update(by_dow if by_dow else [c[0] for c in ztm_cals])
+
+    if not rail_active:
+        rail_cals = [c for c in calendars if c[0].startswith(RAIL_ID_PREFIX)]
+        by_cal = [c[0] for c in rail_cals if c[1 + dow_idx] == 1]
+        rail_active.update(by_cal)
+        if not rail_active:
+            for delta in (7, -7, 1, -1):
+                probe_int = int((target_date + dt.timedelta(days=delta)).strftime("%Y%m%d"))
+                probe_rail = [
+                    sid for sid, ex_type in cal_dates_by_date.get(probe_int, ())
+                    if sid.startswith(RAIL_ID_PREFIX) and ex_type == 1
+                ]
+                if probe_rail:
+                    rail_active.update(probe_rail)
+                    break
+
+    return sorted(ztm_active | rail_active)
+
+
+def _serialize_raptor_graph_for_services(
+    conn: sqlite3.Connection,
+    service_ids: list[str],
+    stops: list[tuple],
+    stop_id_to_index: dict[str, int],
+    route_by_id: dict[str, tuple],
+    footpath_offsets: list[int],
+    footpath_to_stop: list[int],
+    footpath_walk_sec: list[int],
+    footpath_distance_meters: list[int],
+) -> bytes:
+    """
+    Строит граф RaptorData (100% эквивалент TransitGraphBuilder.kt) и сериализует его
+    в бинарный формат RaptorDataCache v1 (MAGIC=0x4F445243, FORMAT_VERSION=1).
+    Поля dbFingerprint (offset 8..15) и serviceDateYyyymmdd (offset 16..19) заполняются 0
+    и патчатся на устройстве при распаковке бандла под актуальный fingerprint БД.
+    """
+    cur = conn.cursor()
+    trips: list[tuple] = []
+    for i in range(0, len(service_ids), 500):
+        chunk = service_ids[i:i + 500]
+        ph = ",".join("?" for _ in chunk)
+        cur.execute(
+            f"SELECT trip_id, route_id, trip_headsign, shape_id, wheelchair_accessible "
+            f"FROM trips WHERE service_id IN ({ph})",
+            chunk,
+        )
+        trips.extend(cur.fetchall())
+
+    trip_by_id = {t[0]: t for t in trips}
+
+    stop_times_by_trip: dict[str, list[tuple[int, int, int, int, int]]] = defaultdict(list)
+    for i in range(0, len(service_ids), 500):
+        chunk = service_ids[i:i + 500]
+        ph = ",".join("?" for _ in chunk)
+        cur.execute(
+            f"SELECT st.trip_id, st.stop_sequence, st.stop_id, st.arrival_time_sec, st.departure_time_sec, st.is_on_demand "
+            f"FROM stop_times st INNER JOIN trips t ON st.trip_id = t.trip_id "
+            f"WHERE t.service_id IN ({ph})",
+            chunk,
+        )
+        for tid, seq, sid, arr, dep, on_demand in cur:
+            s_idx = stop_id_to_index.get(sid)
+            if s_idx is None or tid not in trip_by_id:
+                continue
+            stop_times_by_trip[tid].append((seq, s_idx, arr, dep, 1 if on_demand == 1 else 0))
+
+    # Группируем рейсы в паттерны с идентичной последовательностью остановок
+    pattern_map: dict[tuple[str, tuple[int, ...]], list[tuple[tuple, list[tuple[int, int, int, int, int]]]]] = {}
+    for tid, st_list in stop_times_by_trip.items():
+        if len(st_list) < 2:
+            continue
+        st_list.sort(key=lambda x: x[0])
+        trip = trip_by_id[tid]
+        stop_seq = tuple(st[1] for st in st_list)
+        key = (trip[1], stop_seq)
+        pattern_map.setdefault(key, []).append((trip, st_list))
+
+    entries = list(pattern_map.items())
+    pattern_count = len(entries)
+    pattern_stop_offsets = [0] * (pattern_count + 1)
+    pattern_trip_offsets = [0] * (pattern_count + 1)
+    pattern_route_short_name: list[str] = [""] * pattern_count
+    pattern_route_type: list[int] = [3] * pattern_count
+    pattern_route_color: list[str | None] = [None] * pattern_count
+    pattern_headsign: list[str] = [""] * pattern_count
+
+    total_pattern_stops = 0
+    total_trips = 0
+    total_st_entries = 0
+
+    for p, ((route_id, stop_seq), p_trips) in enumerate(entries):
+        p_trips.sort(key=lambda item: item[1][0][3])  # first stop departure_time_sec
+        pattern_stop_offsets[p] = total_pattern_stops
+        pattern_trip_offsets[p] = total_trips
+        total_pattern_stops += len(stop_seq)
+        total_trips += len(p_trips)
+        total_st_entries += len(p_trips) * len(stop_seq)
+
+        route = route_by_id.get(route_id)
+        if route is not None:
+            pattern_route_short_name[p] = route[1]
+            pattern_route_type[p] = route[3]
+            pattern_route_color[p] = route[4]
+            route_long_name = route[2] or ""
+        else:
+            pattern_route_short_name[p] = route_id
+            pattern_route_type[p] = 3
+            pattern_route_color[p] = None
+            route_long_name = ""
+
+        first_hs = p_trips[0][0][2] if p_trips else ""
+        pattern_headsign[p] = first_hs if first_hs.strip() else route_long_name
+
+    pattern_stop_offsets[pattern_count] = total_pattern_stops
+    pattern_trip_offsets[pattern_count] = total_trips
+
+    stop_count = len(stops)
+    pattern_stops: list[int] = []
+    trip_ids: list[str] = []
+    trip_shape_ids: list[str] = []
+    trip_pattern_index: list[int] = []
+    trip_wheelchair: list[int] = []
+    trip_st_offsets: list[int] = []
+    arrival_times: list[int] = []
+    departure_times: list[int] = []
+    on_demand_bytes = bytearray(total_st_entries)
+    stop_pattern_counts = [0] * stop_count
+
+    st_cursor = 0
+    for p, ((_, stop_seq), p_trips) in enumerate(entries):
+        for s_idx in stop_seq:
+            pattern_stops.append(s_idx)
+            stop_pattern_counts[s_idx] += 1
+        for trip, st_list in p_trips:
+            trip_ids.append(trip[0])
+            trip_shape_ids.append(trip[3] or "")
+            trip_pattern_index.append(p)
+            trip_wheelchair.append(trip[4])
+            trip_st_offsets.append(st_cursor)
+            for _, _, arr, dep, on_dem in st_list:
+                arrival_times.append(arr)
+                departure_times.append(dep)
+                on_demand_bytes[st_cursor] = on_dem
+                st_cursor += 1
+    trip_st_offsets.append(st_cursor)
+
+    # CSR reverse index: stop -> (pattern, pos)
+    stop_to_pattern_offsets = [0] * (stop_count + 1)
+    total_sp = 0
+    for s in range(stop_count):
+        stop_to_pattern_offsets[s] = total_sp
+        total_sp += stop_pattern_counts[s]
+    stop_to_pattern_offsets[stop_count] = total_sp
+
+    stop_to_patterns = [0] * total_sp
+    stop_to_pattern_pos = [0] * total_sp
+    stop_fill = list(stop_to_pattern_offsets)
+    for p in range(pattern_count):
+        p_start = pattern_stop_offsets[p]
+        p_end = pattern_stop_offsets[p + 1]
+        for pos in range(p_end - p_start):
+            s_idx = pattern_stops[p_start + pos]
+            w_idx = stop_fill[s_idx]
+            stop_fill[s_idx] = w_idx + 1
+            stop_to_patterns[w_idx] = p
+            stop_to_pattern_pos[w_idx] = pos
+
+    stop_ids = [s[0] for s in stops]
+    stop_names = [s[1] for s in stops]
+    stop_lats = [float(s[2]) for s in stops]
+    stop_lons = [float(s[3]) for s in stops]
+    stop_zones = [(s[4] if (s[4] and s[4].strip()) else "A") for s in stops]
+    stop_platforms = [s[5] or "" for s in stops]
+
+    chunks = [
+        # Header: MAGIC, FORMAT_VERSION, placeholder dbFingerprint (0L), placeholder serviceDate (0)
+        struct.pack(">iiqi", RAPTOR_CACHE_MAGIC, RAPTOR_CACHE_VERSION, 0, 0),
+        # Stops
+        struct.pack(">i", stop_count),
+        _pack_string_array(stop_ids),
+        _pack_string_array(stop_names),
+        _pack_double_array(stop_lats),
+        _pack_double_array(stop_lons),
+        _pack_string_array(stop_zones),
+        _pack_string_array(stop_platforms),
+        # Patterns
+        struct.pack(">i", pattern_count),
+        _pack_int_array(pattern_stop_offsets),
+        _pack_int_array(pattern_stops),
+        _pack_int_array(pattern_trip_offsets),
+        _pack_string_array(pattern_route_short_name),
+        _pack_int_array(pattern_route_type),
+        _pack_nullable_string_array(pattern_route_color),
+        _pack_string_array(pattern_headsign),
+        # Trips
+        struct.pack(">i", total_trips),
+        _pack_string_array(trip_ids),
+        _pack_string_array(trip_shape_ids),
+        _pack_int_array(trip_pattern_index),
+        _pack_int_array(trip_wheelchair),
+        _pack_int_array(trip_st_offsets),
+        _pack_int_array(arrival_times),
+        _pack_int_array(departure_times),
+        struct.pack(">i", len(on_demand_bytes)),
+        bytes(on_demand_bytes),
+        # Reverse index
+        _pack_int_array(stop_to_pattern_offsets),
+        _pack_int_array(stop_to_patterns),
+        _pack_int_array(stop_to_pattern_pos),
+        # Footpaths
+        _pack_int_array(footpath_offsets),
+        _pack_int_array(footpath_to_stop),
+        _pack_int_array(footpath_walk_sec),
+        _pack_int_array(footpath_distance_meters),
+    ]
+    return b"".join(chunks)
+
+
+def build_raptor_bundle(db_path: Path, output_dir: Path, num_days: int = RAPTOR_PREBUILD_DAYS) -> dict:
+    """
+    Заранее формирует бинарные графы RAPTOR на ближайшие `num_days` дней (с дедупликацией
+    одинаковых расписаний Пн–Пт) и упаковывает их в `raptor_graphs.bundle.gz`.
+    На телефоне распаковка занимает < 200 мс, полностью исключая первичную сборку графа из SQLite!
+    """
+    bundle_path = output_dir / "raptor_graphs.bundle.gz"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+
+    cur.execute("SELECT stop_id, stop_name, stop_lat, stop_lon, zone_id, platform_code FROM stops ORDER BY stop_name ASC")
+    stops = cur.fetchall()
+    stop_id_to_index = {s[0]: i for i, s in enumerate(stops)}
+    stop_count = len(stops)
+
+    cur.execute("SELECT route_id, short_name, long_name, route_type, route_color FROM routes")
+    route_by_id = {r[0]: r for r in cur.fetchall()}
+
+    cur.execute("SELECT service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday, start_date, end_date FROM calendars")
+    calendars = cur.fetchall()
+
+    cal_dates_by_date: dict[int, list[tuple[str, int]]] = defaultdict(list)
+    cur.execute("SELECT service_id, date, exception_type FROM calendar_dates")
+    for sid, d_int, ex_type in cur.fetchall():
+        cal_dates_by_date[d_int].append((sid, ex_type))
+
+    # Предрасчитываем CSR-массивы пересадок один раз (они общие для всех дней)
+    fp_by_stop: list[list[tuple[int, int, int]]] = [[] for _ in range(stop_count)]
+    cur.execute("SELECT from_stop_id, to_stop_id, min_transfer_time_sec, distance_meters FROM transfers")
+    for from_id, to_id, min_sec, dist_m in cur.fetchall():
+        f_idx = stop_id_to_index.get(from_id)
+        t_idx = stop_id_to_index.get(to_id)
+        if f_idx is None or t_idx is None or f_idx == t_idx:
+            continue
+        fp_by_stop[f_idx].append((t_idx, max(30, int(min_sec)), max(10, int(dist_m))))
+
+    footpath_offsets = [0] * (stop_count + 1)
+    footpath_to_stop: list[int] = []
+    footpath_walk_sec: list[int] = []
+    footpath_distance_meters: list[int] = []
+    cursor = 0
+    for s in range(stop_count):
+        footpath_offsets[s] = cursor
+        for t_idx, w_sec, d_m in fp_by_stop[s]:
+            footpath_to_stop.append(t_idx)
+            footpath_walk_sec.append(w_sec)
+            footpath_distance_meters.append(d_m)
+            cursor += 1
+    footpath_offsets[stop_count] = cursor
+
+    today = get_warsaw_today()
+    date_entries: list[tuple[int, int]] = []  # (dateYyyymmdd, unique_graph_idx)
+    service_set_to_idx: dict[tuple[str, ...], int] = {}
+    unique_service_sets: list[list[str]] = []
+
+    for offset in range(num_days):
+        target_date = today + dt.timedelta(days=offset)
+        date_int = int(target_date.strftime("%Y%m%d"))
+        active = _resolve_active_services_for_date(target_date, calendars, cal_dates_by_date)
+        key = tuple(active)
+        if key not in service_set_to_idx:
+            service_set_to_idx[key] = len(unique_service_sets)
+            unique_service_sets.append(active)
+        date_entries.append((date_int, service_set_to_idx[key]))
+
+    unique_payloads: list[bytes] = []
+    for svc_ids in unique_service_sets:
+        payload = _serialize_raptor_graph_for_services(
+            conn=conn,
+            service_ids=svc_ids,
+            stops=stops,
+            stop_id_to_index=stop_id_to_index,
+            route_by_id=route_by_id,
+            footpath_offsets=footpath_offsets,
+            footpath_to_stop=footpath_to_stop,
+            footpath_walk_sec=footpath_walk_sec,
+            footpath_distance_meters=footpath_distance_meters,
+        )
+        unique_payloads.append(payload)
+
+    conn.close()
+
+    with gzip.open(bundle_path, "wb", compresslevel=9) as gz:
+        gz.write(struct.pack(">iii", RAPTOR_BUNDLE_MAGIC, RAPTOR_BUNDLE_VERSION, len(date_entries)))
+        for date_int, g_idx in date_entries:
+            gz.write(struct.pack(">ii", date_int, g_idx))
+        gz.write(struct.pack(">i", len(unique_payloads)))
+        for payload in unique_payloads:
+            gz.write(struct.pack(">i", len(payload)))
+            gz.write(payload)
+
+    return {
+        "raptor_bundle_filename": bundle_path.name,
+        "raptor_bundle_sha256": sha256_file(bundle_path),
+        "raptor_bundle_size_bytes": bundle_path.stat().st_size,
+        "raptor_bundle_dates": [d for d, _ in date_entries],
+        "raptor_bundle_unique_graphs": len(unique_payloads),
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -673,6 +1133,7 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
         cur.executemany("INSERT OR REPLACE INTO calendar_dates VALUES (?, ?, ?)", cal_dates)
 
         trips = []
+        used_ztm_shape_ids: set[str] = set()
         for r in read_zip_csv(zf, "trips.txt"):
             tid = r.get("trip_id", "")
             rid = r.get("route_id", "")
@@ -680,13 +1141,16 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
             if not (tid and rid and sid):
                 continue
             valid_trip_ids.add(tid)
+            shid = r.get("shape_id", "")
+            if shid:
+                used_ztm_shape_ids.add(shid)
             trips.append((
                 tid,
                 rid,
                 sid,
                 r.get("trip_headsign", ""),
                 int(r.get("direction_id") or 0),
-                r.get("shape_id", ""),
+                shid,
                 int(r.get("wheelchair_accessible") or 0),
             ))
         cur.executemany("INSERT OR REPLACE INTO trips VALUES (?, ?, ?, ?, ?, ?, ?)", trips)
@@ -720,7 +1184,7 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
         ztm_shapes: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
         for r in read_zip_csv(zf, "shapes.txt"):
             shid = r.get("shape_id", "")
-            if not shid:
+            if not shid or (used_ztm_shape_ids and shid not in used_ztm_shape_ids):
                 continue
             try:
                 ztm_shapes[shid].append((int(r["shape_pt_sequence"]), float(r["shape_pt_lat"]), float(r["shape_pt_lon"])))
@@ -730,7 +1194,7 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
         for shid, pts in ztm_shapes.items():
             pts.sort(key=lambda x: x[0])
             for seq, lat, lon in simplify_shape_dp(pts):
-                shape_batch.append((shid, seq, lat, lon))
+                shape_batch.append((shid, seq, round(lat, 5), round(lon, 5)))
             if len(shape_batch) >= 10_000:
                 cur.executemany("INSERT OR REPLACE INTO shapes VALUES (?, ?, ?, ?)", shape_batch)
                 shape_batch.clear()
@@ -771,6 +1235,14 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
         shutil.copyfileobj(src, dst, length=64 * 1024)
 
     gz_size = gz_path.stat().st_size
+    print(f"Pre-building {RAPTOR_PREBUILD_DAYS}-day binary RAPTOR graph bundle...")
+    bundle_meta = build_raptor_bundle(db_path, output_dir, num_days=RAPTOR_PREBUILD_DAYS)
+    print(
+        f"RAPTOR bundle ready: {bundle_meta['raptor_bundle_filename']} "
+        f"({bundle_meta['raptor_bundle_size_bytes'] / (1024 * 1024):.2f} MB, "
+        f"{bundle_meta['raptor_bundle_unique_graphs']} unique graphs for {len(bundle_meta['raptor_bundle_dates'])} days)"
+    )
+
     metadata = {
         "build_date": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sha256": db_sha256,
@@ -782,6 +1254,7 @@ def build_database(zip_path: Path, output_dir: Path, rail_zip_path: Path | None 
         "rail_stops_count": rail_stops_count,
         "rail_trips_count": rail_trips_count,
         "room_version": ROOM_DB_VERSION,
+        **bundle_meta,
     }
     (output_dir / "version.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return metadata

@@ -38,11 +38,12 @@
 
 ### C. Слой данных (`data/`) и GitHub Actions
 - **Room v4 (`GtfsDatabase.kt`):** миграции `MIGRATION_1_2` + `MIGRATION_2_3` + `MIGRATION_3_4` (удалены 4 избыточных индекса `stop_times`/`shapes`/`transfers`, экономия ~75–85 МБ в БД), поля `isOnDemand`, identityHash `dc4426e9d6a7b832b5461a17d983f804` синхронизирован с `scripts/build_gtfs_db.py`.
-- **Ускорение первой загрузки расписания:**
-  - `scripts/build_gtfs_db.py`: `PRAGMA page_size = 8192`, без лишних индексов, упрощение геометрии линий алгоритмом Дугласа–Пекера (`SHAPE_SIMPLIFY_METERS = 8.0`).
-  - `OnboardingViewModel.kt`: при первом запуске расписание скачивается первым (без конкуренции за канал с офлайн-картой ~90 МБ), карта стартует автоматически сразу после.
-  - `PrebuiltDbDownloader.kt`: буферизованная распаковка GZIP (буферы 256 КБ / 128 КБ).
-  - `TransitGraphRepository.kt`: прямое чтение `stop_times` через `SupportSQLiteDatabase` (`loadStopTimesForServicesFast`, без temp B-tree `ORDER BY`) и асинхронное сохранение `RaptorDataCache` после выдачи графа в UI.
+- **Ускорение первой загрузки расписания и предсобранные графы RAPTOR:**
+  - `scripts/build_gtfs_db.py`: `PRAGMA page_size = 8192`, без лишних индексов, обрезка неиспользуемых `shapes` + округление координат (5 знаков) + упрощение Дугласа–Пекера (`SHAPE_SIMPLIFY_METERS = 8.0`), 21-дневное скользящее окно для ж/д сервисов (`RAIL_WINDOW_DAYS = 21`).
+  - **Предсобранный бинарный бандл графов (`raptor_graphs.bundle.gz`, формат `ODRB` v1):** `scripts/build_gtfs_db.py` заранее собирает и дедуплицирует бинарные графы `RaptorData` (`ODRC` v1) на ближайшие 7 дней прямо в GitHub Actions и публикует в релиз `schedule-latest` вместе с `poznan_schedule.db.gz` и `version.json`.
+  - `PrebuiltDbDownloader.kt` + `RaptorDataCache.installPrebuiltBundle(...)`: после подмены БД распаковывает готовый бандл в `cacheDir` (патча `dbFingerprint` и `serviceDate` в заголовке), поэтому `TransitGraphRepository.reloadForToday(preferDiskCache = true)` поднимает граф за **~50–120 мс** вместо 4–6 сек сборки из SQLite.
+  - `OnboardingViewModel.kt` + `OnboardingScreen.kt`: офлайн-карта `poznan.pmtiles` скачивается сразу **вместе с расписанием** (параллельно при первом запуске и при нажатии «Обновить расписание», если карта ещё не загружена).
+  - `PrebuiltDbDownloader.kt`: буферизованная распаковка GZIP (буферы 256 КБ / 128 КБ); `TransitGraphRepository.kt`: прямое чтение `stop_times` через `SupportSQLiteDatabase` (`loadStopTimesForServicesFast`) и асинхронное сохранение кэша при fallback.
 - **Пригородные электрички (Koleje Wielkopolskie + Polregio):** `scripts/build_gtfs_db.py` автоматически объединяет GTFS ZTM Poznań с региональными поездами (`https://mkuran.pl/gtfs/polish_trains.zip`, резерв `http://ws.kolejewlkp.pl:83/gtfs_kw.zip`, агентства `KW` и `PR` в bbox Познаньской агломерации, префикс `rail_`, радиус пересадок ZTM↔ж/д до 450 м).
 - **Раздельный календарь ZTM и ж/д (`TransitGraphRepository.resolveActiveServicesForDate`):** активные `service_id` для ZTM и `rail_*` определяются независимо с отдельными фолбэками, чтобы даты ж/д фида не скрывали трамваи и автобусы ZTM.
 - **Бинарный дисковый кэш графа (`RaptorDataCache.kt`):** сохраняет собранный граф в `cacheDir/raptor_graph_v1_YYYYMMDD.bin`, `OffDojadeApp.onCreate` заранее прогревает сегодня и завтра (~50–120 мс).
@@ -72,5 +73,5 @@
 ---
 
 ## 3. Текущий статус
-- Юнит-тесты: **34/34 passed** (`testDebugUnitTest`).
+- Юнит-тесты: **36/36 passed** (`testDebugUnitTest`, включая кросс-языковой тест совместимости Python-сборщика и Android-загрузчика `RaptorDataCacheBundleTest`).
 - Релизная сборка: подписанный `app/build/outputs/apk/release/app-release.apk` (`BUILD SUCCESSFUL`).

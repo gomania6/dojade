@@ -41,7 +41,7 @@ class GtfsSyncWorker(
             if (AppConfig.isPrebuiltScheduleConfigured()) {
                 val prebuiltOk = runCatching {
                     prebuiltDbDownloader.syncFromGitHubReleases(forceDownload = false).collect()
-                    transitGraphRepository.reloadForToday()
+                    transitGraphRepository.reloadForToday(preferDiskCache = true)
                 }.isSuccess
                 if (prebuiltOk) return Result.success()
             }

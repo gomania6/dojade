@@ -81,18 +81,17 @@ class OnboardingViewModel(
                     gtfsStageType = if (dbHasData) OnboardingGtfsStage.ALREADY_LOADED else it.gtfsStageType
                 )
             }
+            if (!mapExists) {
+                // Офлайн-карта скачивается сразу вместе с расписанием
+                startMapDownload()
+            }
             if (!dbHasData) {
-                // Сначала скачиваем расписание на полной скорости канала (не деля трафик с 90 МБ картой),
-                // а оффлайн-карту автоматически подхватываем сразу после готовности расписания
-                startGtfsSync(autoStartMapAfter = !mapExists)
+                startGtfsSync(alsoDownloadMapIfMissing = false)
             } else {
                 // Прогреваем граф и индекс остановок пока пользователь на экране ознакомления
                 viewModelScope.launch {
                     transitGraphRepository.ensureLoadedForToday()
                     transitGraphRepository.searchStopGroups("", limit = 1)
-                }
-                if (!mapExists) {
-                    startMapDownload()
                 }
             }
         }
@@ -146,7 +145,14 @@ class OnboardingViewModel(
         }
     }
 
-    fun startGtfsSync(autoStartMapAfter: Boolean = false) {
+    fun startGtfsSync(alsoDownloadMapIfMissing: Boolean = true) {
+        if (alsoDownloadMapIfMissing &&
+            !_uiState.value.mapDownloaded &&
+            !_uiState.value.mapDownloading &&
+            !_uiState.value.mapSkipped
+        ) {
+            startMapDownload()
+        }
         if (gtfsJob?.isActive == true) return
         gtfsJob = viewModelScope.launch {
             _uiState.update {
@@ -191,7 +197,7 @@ class OnboardingViewModel(
             }
 
             if (prebuiltSucceeded) {
-                finalizeGraphReload(autoStartMapAfter)
+                finalizeGraphReload(preferPrebuiltCache = true)
                 return@launch
             }
 
@@ -215,20 +221,20 @@ class OnboardingViewModel(
                         )
                     }
                     if (progress.isFinished) {
-                        finalizeGraphReload(autoStartMapAfter)
+                        finalizeGraphReload(preferPrebuiltCache = false)
                     }
                 }
         }
     }
 
-    private suspend fun finalizeGraphReload(autoStartMapAfter: Boolean = false) {
+    private suspend fun finalizeGraphReload(preferPrebuiltCache: Boolean = false) {
         _uiState.update {
             it.copy(
                 gtfsStageType = OnboardingGtfsStage.BUILDING_GRAPH,
                 gtfsStageCustom = ""
             )
         }
-        transitGraphRepository.reloadForToday()
+        transitGraphRepository.reloadForToday(preferDiskCache = preferPrebuiltCache)
         preferencesRepository.setOnboardingCompleted(true)
         _uiState.update {
             it.copy(
@@ -238,9 +244,6 @@ class OnboardingViewModel(
                 gtfsStageType = OnboardingGtfsStage.READY_OFFLINE,
                 gtfsStageCustom = ""
             )
-        }
-        if (autoStartMapAfter && !_uiState.value.mapDownloaded && !_uiState.value.mapSkipped) {
-            startMapDownload()
         }
     }
 

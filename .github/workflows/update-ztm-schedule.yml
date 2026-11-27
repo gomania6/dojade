@@ -24,15 +24,15 @@ jobs:
       - name: Download ZTM + KW/Polregio Rail GTFS and build compact SQLite DB
         run: python scripts/build_gtfs_db.py --output-dir dist
 
-      - name: Publish poznan_schedule.db.gz and version.json to GitHub Releases
+      - name: Publish poznan_schedule.db.gz, raptor_graphs.bundle.gz and version.json to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="schedule-latest"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/poznan_schedule.db.gz dist/version.json --clobber
+            gh release upload "$TAG" dist/poznan_schedule.db.gz dist/raptor_graphs.bundle.gz dist/version.json --clobber
           else
-            gh release create "$TAG" dist/poznan_schedule.db.gz dist/version.json \
+            gh release create "$TAG" dist/poznan_schedule.db.gz dist/raptor_graphs.bundle.gz dist/version.json \
               --title "ZTM Poznań Prebuilt Schedule (Auto-updated)" \
-              --notes "Ежедневно обновляемая SQLite-база расписания ZTM Poznań для PyrTransit."
+              --notes "Ежедневно обновляемая SQLite-база расписания и предсобранный граф RAPTOR ZTM Poznań + KW/Polregio для PyrTransit."
           fi

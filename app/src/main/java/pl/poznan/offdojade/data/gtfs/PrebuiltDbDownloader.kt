@@ -13,6 +13,7 @@ import okhttp3.Request
 import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.DatabaseHolder
 import pl.poznan.offdojade.data.local.PreferencesRepository
+import pl.poznan.offdojade.domain.routing.RaptorDataCache
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -31,7 +32,9 @@ data class PrebuiltScheduleVersion(
     @SerialName("compressed_size_bytes") val compressedSizeBytes: Long = 0L,
     @SerialName("stops_count") val stopsCount: Int = 0,
     @SerialName("trips_count") val tripsCount: Int = 0,
-    @SerialName("room_version") val roomVersion: Int = 1
+    @SerialName("room_version") val roomVersion: Int = 1,
+    @SerialName("raptor_bundle_filename") val raptorBundleFilename: String? = null,
+    @SerialName("raptor_bundle_size_bytes") val raptorBundleSizeBytes: Long = 0L
 )
 
 /**
@@ -134,16 +137,31 @@ class PrebuiltDbDownloader(
                 }
             }
 
-            emit(GtfsImportProgress("Подмена локальной базы SQLite…", 0.92f, rowsImported = remote.tripsCount))
+            emit(GtfsImportProgress("Подмена локальной базы SQLite…", 0.86f, rowsImported = remote.tripsCount))
             databaseHolder.replaceDatabaseFile(tmpFile)
+
+            // Загружаем готовые бинарные графы RAPTOR на ближайшие 7 дней (~1.5–2.5 МБ),
+            // чтобы телефон открывал расписание мгновенно (~80 мс) без долгой сборки из SQLite!
+            val bundleName = remote.raptorBundleFilename
+            val prebuiltGraphsInstalled = if (!bundleName.isNullOrBlank()) {
+                emit(GtfsImportProgress("Загрузка предсобранного графа RAPTOR…", 0.92f, rowsImported = remote.tripsCount))
+                downloadAndInstallRaptorBundle(bundleName)
+            } else {
+                0
+            }
 
             preferencesRepository.updatePrebuiltDbMetadata(
                 sha256 = remote.sha256,
                 buildDate = remote.buildDate
             )
+            val readyMsg = if (prebuiltGraphsInstalled > 0) {
+                "Готовая база и кэш на $prebuiltGraphsInstalled дн. загружены (${remote.stopsCount} остановок)"
+            } else {
+                "Готовая база обновлена (${remote.stopsCount} остановок)"
+            }
             emit(
                 GtfsImportProgress(
-                    stage = "Готовая база обновлена (${remote.stopsCount} остановок)",
+                    stage = readyMsg,
                     progress = 1f,
                     rowsImported = remote.tripsCount,
                     isFinished = true
@@ -154,4 +172,24 @@ class PrebuiltDbDownloader(
             throw e
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun downloadAndInstallRaptorBundle(bundleFilename: String): Int = runCatching {
+        val baseDir = AppConfig.SCHEDULE_DB_GZ_URL.substringBeforeLast('/')
+        val bundleUrl = if (bundleFilename.startsWith("http://") || bundleFilename.startsWith("https://")) {
+            bundleFilename
+        } else {
+            "$baseDir/$bundleFilename"
+        }
+        val req = Request.Builder().url(bundleUrl).build()
+        okHttpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@runCatching 0
+            val stream = resp.body?.byteStream() ?: return@runCatching 0
+            val fingerprint = databaseHolder.getDatabaseFingerprint()
+            RaptorDataCache.installPrebuiltBundle(
+                gzipStream = stream,
+                cacheDir = context.cacheDir,
+                dbFingerprint = fingerprint
+            )
+        }
+    }.getOrDefault(0)
 }

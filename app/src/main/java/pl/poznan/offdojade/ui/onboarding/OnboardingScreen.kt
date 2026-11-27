@@ -106,7 +106,7 @@ fun OnboardingScreen(
             Surface(color = MaterialTheme.colorScheme.background) {
                 Button(
                     onClick = { viewModel.markOnboardingDone(onFinished) },
-                    enabled = state.canContinue || !state.gtfsSyncing,
+                    enabled = state.canContinue || (!state.gtfsSyncing && !state.mapDownloading),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp, vertical = 16.dp)
@@ -320,7 +320,7 @@ fun OnboardingScreen(
                         horizontalArrangement = Arrangement.End
                     ) {
                         OutlinedButton(
-                            onClick = viewModel::startGtfsSync,
+                            onClick = { viewModel.startGtfsSync() },
                             enabled = !state.gtfsSyncing
                         ) {
                             Text(
