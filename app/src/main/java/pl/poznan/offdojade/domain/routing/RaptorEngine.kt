@@ -41,7 +41,9 @@ class RaptorEngine {
         val targetLon: Double,
         val targetName: String?,
         /** Пеший доход от конечной остановки до адреса назначения (пусто, если цель — сама остановка) */
-        val targetEgressMap: Map<Int, OriginAccess> = emptyMap()
+        val targetEgressMap: Map<Int, OriginAccess> = emptyMap(),
+        /** Разрешать ли расширение пешими переходами из стартовых платформ в раунде 0 */
+        val allowOriginFootpathExpansion: Boolean = true
     )
 
     /**
@@ -95,7 +97,8 @@ class RaptorEngine {
         val resolved = resolveStopQuery(
             data = data,
             originStopId = originStopId,
-            targetStopId = targetStopId
+            targetStopId = targetStopId,
+            tripSettings = tripSettings
         ) ?: return emptyList()
 
         val effectiveMaxTransfers = minOf(maxTransfers, tripSettings.effectiveMaxTransfers)
@@ -202,8 +205,12 @@ class RaptorEngine {
 
         val pruned = pruneDominatedJourneys(rawUpcoming, tripSettings)
         // В вечернее и ночное время (21:00–05:00) оставляем все возможные варианты, чтобы человек точно смог уехать.
-        // В дневное время показываем маршруты с 2+ пересадками только когда простых вариантов (< 3) мало.
-        val simpleRoutes = pruned.filter { it.transferCount <= 1 }
+        // В дневное время показываем маршруты с 2+ пересадками только когда простых вариантов (< 3) мало,
+        // НО в режиме «Лучшее» всегда разрешаем 2 пересадки вида «автобус -> трамвай -> трамвай» (въезд в город).
+        val allowCityBusTramTram = tripSettings.routePreference == RoutePreference.BEST && !tripSettings.avoidTransfers
+        val simpleRoutes = pruned.filter { j ->
+            j.transferCount <= 1 || (allowCityBusTramTram && isBusIntoCityTramToTram(j))
+        }
         val filtered = if (!isEvening && simpleRoutes.size >= MIN_SIMPLE_ROUTES_TO_HIDE_TWO_TRANSFERS) {
             simpleRoutes
         } else {
@@ -242,7 +249,8 @@ class RaptorEngine {
             targetLat = targetLat,
             targetLon = targetLon,
             targetName = targetName,
-            tripSettings = tripSettings
+            tripSettings = tripSettings,
+            isEveningOrNight = isEveningOrNight(beforeDepartureSec)
         ) ?: return emptyList()
 
         val effectiveMaxTransfers = tripSettings.effectiveMaxTransfers
@@ -311,7 +319,8 @@ class RaptorEngine {
             targetLat = targetLat,
             targetLon = targetLon,
             targetName = targetName,
-            tripSettings = tripSettings
+            tripSettings = tripSettings,
+            isEveningOrNight = isEveningOrNight(arriveByTimeSec)
         ) ?: return emptyList()
 
         val effectiveMaxTransfers = tripSettings.effectiveMaxTransfers
@@ -411,7 +420,7 @@ class RaptorEngine {
 
         if (tramsEnabled && busesEnabled) {
             val hasTramOnly = candidates.any { j -> j.transitLegs.all { it.isTram } }
-            val hasBusOnly = candidates.any { j -> j.transitLegs.all { !it.isTram } }
+            val hasBusOnly = candidates.any { j -> j.transitLegs.all { !it.isTram && !it.isRail } }
 
             if (!hasTramOnly) {
                 val tramSettings = tripSettings.copy(
@@ -426,7 +435,9 @@ class RaptorEngine {
                     tripDelays = tripDelays,
                     maxTransfers = minOf(maxTransfers, 2),
                     tripSettings = tramSettings,
-                    alternativeTag = JourneyAlternativeTag.TRAM_ONLY
+                    alternativeTag = JourneyAlternativeTag.TRAM_ONLY,
+                    maxFootpathMetersOverride = eveningFootpathOverride,
+                    maxTransferWaitSecOverride = bestMaxWaitOverride
                 ).filter { maxAltDepSec == null || it.transitDepartureTimeSec <= maxAltDepSec }
                 candidates.addAll(tramAlt)
             }
@@ -443,7 +454,9 @@ class RaptorEngine {
                     tripDelays = tripDelays,
                     maxTransfers = minOf(maxTransfers, 1),
                     tripSettings = busSettings,
-                    alternativeTag = JourneyAlternativeTag.BUS_ONLY
+                    alternativeTag = JourneyAlternativeTag.BUS_ONLY,
+                    maxFootpathMetersOverride = eveningFootpathOverride,
+                    maxTransferWaitSecOverride = bestMaxWaitOverride
                 ).filter { maxAltDepSec == null || it.transitDepartureTimeSec <= maxAltDepSec }
                 candidates.addAll(busAlt)
             }
@@ -451,10 +464,17 @@ class RaptorEngine {
 
         if (candidates.isEmpty()) return emptyList()
 
+        val directDistMeters = GeoUtils.haversineMeters(
+            query.originLat, query.originLon,
+            query.targetLat, query.targetLon
+        )
+
         // 3. Дедупликация по набору рейсов + отсеивание бессмысленных пересадок на ту же линию
+        //    и абсурдных поездок (одна остановка -> та же остановка, пешком больше чем напрямую, нет приближения к цели)
         val uniqueByTrips = LinkedHashMap<String, TransitJourney>()
         for (j in candidates) {
             if (hasRedundantSameLineTransfer(j)) continue
+            if (isAbsurdJourney(j, query, directDistMeters)) continue
             val sig = j.tripSignature()
             val existing = uniqueByTrips[sig]
             if (existing == null || j.arrivalTimeSec < existing.arrivalTimeSec) {
@@ -463,10 +483,7 @@ class RaptorEngine {
         }
 
         val uniqueList = uniqueByTrips.values.toList()
-        val directDistMeters = GeoUtils.haversineMeters(
-            query.originLat, query.originLon,
-            query.targetLat, query.targetLon
-        )
+        if (uniqueList.isEmpty()) return emptyList()
 
         // 4. Фильтр против кругов через весь город (Anti-Detour; вечером/ночью мягче, чтобы доехать на чём угодно)
         val noDetours = filterOutDetours(
@@ -474,18 +491,28 @@ class RaptorEngine {
             directDistMeters = directDistMeters,
             isEveningOrNight = isEvening
         )
+        if (noDetours.isEmpty()) return emptyList()
 
         // 5. Не показываем варианты с 2+ пересадками, если в этот момент уже есть маршрут с 0–1 пересадкой
-        // (вечером/ночью или когда простых вариантов нет — сохраняем 2+ пересадки, чтобы человек смог уехать)
+        // (вечером/ночью или когда простых вариантов нет — сохраняем 2+ пересадки, чтобы человек смог уехать;
+        // в режиме «Лучшее» также разрешаем 2 пересадки вида «автобус -> трамвай -> трамвай» при въезде в город)
         val simpleOptions = noDetours.filter { it.transferCount <= 1 }
         val transferFiltered = if (simpleOptions.isNotEmpty() && !isEvening) {
-            if (tripSettings.routePreference == RoutePreference.FASTEST) {
-                val bestSimpleArrival = simpleOptions.minOf { it.arrivalTimeSec }
-                noDetours.filter { j ->
-                    j.transferCount <= 1 || j.arrivalTimeSec <= bestSimpleArrival - FASTEST_TWO_TRANSFER_MIN_SAVING_SEC
+            when (tripSettings.routePreference) {
+                RoutePreference.FASTEST -> {
+                    val bestSimpleArrival = simpleOptions.minOf { it.arrivalTimeSec }
+                    noDetours.filter { j ->
+                        j.transferCount <= 1 || j.arrivalTimeSec <= bestSimpleArrival - FASTEST_TWO_TRANSFER_MIN_SAVING_SEC
+                    }
                 }
-            } else {
-                simpleOptions
+                RoutePreference.BEST -> {
+                    if (!tripSettings.avoidTransfers) {
+                        noDetours.filter { j -> j.transferCount <= 1 || isBusIntoCityTramToTram(j) }
+                    } else {
+                        simpleOptions
+                    }
+                }
+                RoutePreference.CONVENIENT -> simpleOptions
             }
         } else {
             noDetours
@@ -511,6 +538,81 @@ class RaptorEngine {
     }
 
     /**
+     * Отсеивает абсурдные поездки:
+     * 1. Посадка и высадка на одной и той же остановке/узле (например, Rondo Kaponiera -> Rondo Kaponiera).
+     * 2. Микро-поездки с перемещением по транспорту < 120 м (или < 150 м суммарно по всему маршруту).
+     * 3. Поездки, которые не приближают пассажира к цели хотя бы на 100 м относительно остановки посадки.
+     * 4. Поездки с пешими участками, где суммарная ходьба >= прямой дистанции до цели,
+     *    либо транспорт экономит меньше 200 м ходьбы, либо на короткой дистанции > 80% пути всё равно пешком,
+     *    либо точка высадки оказывается не ближе к цели, чем точка старта (минимум на 100 м).
+     */
+    private fun isAbsurdJourney(
+        journey: TransitJourney,
+        query: ResolvedQuery,
+        directDistMeters: Double
+    ): Boolean {
+        val transit = journey.transitLegs
+        if (transit.isEmpty()) return true
+
+        for (leg in transit) {
+            val boardNorm = RaptorData.normalizeStopName(leg.boardingStop.stopName)
+            val alightNorm = RaptorData.normalizeStopName(leg.alightingStop.stopName)
+            if (boardNorm == alightNorm || leg.boardingStop.stopId == leg.alightingStop.stopId) {
+                return true
+            }
+            val legDist = GeoUtils.haversineMeters(
+                leg.boardingStop.latitude, leg.boardingStop.longitude,
+                leg.alightingStop.latitude, leg.alightingStop.longitude
+            )
+            if (legDist < MIN_TRANSIT_LEG_DISPLACEMENT_METERS) {
+                return true
+            }
+        }
+
+        val firstBoard = transit.first().boardingStop
+        val lastAlight = transit.last().alightingStop
+        val netTransitDist = GeoUtils.haversineMeters(
+            firstBoard.latitude, firstBoard.longitude,
+            lastAlight.latitude, lastAlight.longitude
+        )
+        if (netTransitDist < MIN_NET_TRANSIT_DISPLACEMENT_METERS) {
+            return true
+        }
+
+        val distBoardToTarget = GeoUtils.haversineMeters(
+            firstBoard.latitude, firstBoard.longitude,
+            query.targetLat, query.targetLon
+        )
+        val distAlightToTarget = GeoUtils.haversineMeters(
+            lastAlight.latitude, lastAlight.longitude,
+            query.targetLat, query.targetLon
+        )
+        if (distAlightToTarget >= distBoardToTarget - MIN_PROGRESS_TOWARD_TARGET_METERS) {
+            return true
+        }
+
+        val totalWalkMeters = journey.totalWalkMeters.toDouble()
+        if (totalWalkMeters > 0.0) {
+            if (totalWalkMeters >= directDistMeters) {
+                return true
+            }
+            if (directDistMeters - totalWalkMeters < MIN_WALK_SAVING_METERS) {
+                return true
+            }
+            if (directDistMeters < SHORT_TRIP_WALK_RATIO_MAX_DIST_METERS &&
+                totalWalkMeters > directDistMeters * MAX_SHORT_TRIP_WALK_RATIO
+            ) {
+                return true
+            }
+            if (distAlightToTarget >= directDistMeters - MIN_PROGRESS_TOWARD_TARGET_METERS) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
      * Отсеивает маршруты-объезды через весь город:
      * сравнивает пройденную географическую дистанцию с прямой дистанцией (Хаверсин)
      * и длительность поездки с лучшим вариантом.
@@ -520,7 +622,19 @@ class RaptorEngine {
         directDistMeters: Double,
         isEveningOrNight: Boolean = false
     ): List<TransitJourney> {
-        if (journeys.size <= 1) return journeys
+        if (journeys.isEmpty()) return journeys
+        if (journeys.size == 1) {
+            val single = journeys.first()
+            val travelled = computeTravelledDistanceMeters(single)
+            val extremeRatio = if (isEveningOrNight) 5.0 else 4.0
+            if (directDistMeters >= 500.0 &&
+                travelled > directDistMeters * extremeRatio &&
+                travelled > directDistMeters + 1500.0
+            ) {
+                return emptyList()
+            }
+            return journeys
+        }
 
         val bestDurationSec = journeys.minOf { (it.arrivalTimeSec - it.departureTimeSec).coerceAtLeast(60) }
         val bestArrivalSec = journeys.minOf { it.arrivalTimeSec }
@@ -608,6 +722,7 @@ class RaptorEngine {
         val transferWaitSec = computeTransferWaitSeconds(journey)
         val crossStopTransferCount = countCrossStopWalkTransfers(journey)
         val tramLegCount = journey.transitLegs.count { it.isTram }
+        val railLegCount = journey.transitLegs.count { it.isRail }
         val preferredMatches = journey.transitLegs.count { settings.isLinePreferred(it.routeShortName) }
         val preferredBonus = preferredMatches * 210
         val avoidTransfersPenalty = if (settings.avoidTransfers) journey.transferCount * 720 else 0
@@ -626,7 +741,8 @@ class RaptorEngine {
                     crossStopTransferCount * 120 +
                     (transferWaitSec * 0.55).toInt() +
                     (walkSec * 0.90).toInt() -
-                    tramLegCount * 45 +
+                    tramLegCount * 45 -
+                    railLegCount * 75 +
                     avoidTransfersPenalty -
                     preferredBonus
 
@@ -636,7 +752,8 @@ class RaptorEngine {
                     crossStopTransferCount * 360 +
                     (transferWaitSec * 0.95).toInt() +
                     (walkSec * 1.90).toInt() -
-                    tramLegCount * 60 +
+                    tramLegCount * 60 -
+                    railLegCount * 75 +
                     avoidTransfersPenalty -
                     preferredBonus
         }
@@ -858,6 +975,10 @@ class RaptorEngine {
             data.stopIdToIndex[id]?.let { data.stopNames[it] }
         }
 
+        val allowOriginFootpathExpansion = originStopId.isNullOrBlank() ||
+            tripSettings.routePreference != RoutePreference.CONVENIENT ||
+            isEveningOrNight
+
         return ResolvedQuery(
             originAccesses = cleanedOriginAccesses,
             originLat = resolvedOriginLat,
@@ -867,7 +988,8 @@ class RaptorEngine {
             targetLat = resolvedTargetLat,
             targetLon = resolvedTargetLon,
             targetName = resolvedTargetDisplayName,
-            targetEgressMap = targetEgressMap
+            targetEgressMap = targetEgressMap,
+            allowOriginFootpathExpansion = allowOriginFootpathExpansion
         )
     }
 
@@ -898,7 +1020,8 @@ class RaptorEngine {
     private fun resolveStopQuery(
         data: RaptorData,
         originStopId: String,
-        targetStopId: String
+        targetStopId: String,
+        tripSettings: TripSettings = TripSettings()
     ): ResolvedQuery? {
         val originIndices = data.findSiblingStopIndices(originStopId)
         val targetIndices = data.findSiblingStopIndices(targetStopId)
@@ -920,7 +1043,8 @@ class RaptorEngine {
             targetStopIndices = targetIndices,
             targetLat = data.stopLats[firstTarget],
             targetLon = data.stopLons[firstTarget],
-            targetName = null
+            targetName = null,
+            allowOriginFootpathExpansion = tripSettings.routePreference != RoutePreference.CONVENIENT
         )
     }
 
@@ -1122,7 +1246,7 @@ class RaptorEngine {
             }
         }
 
-        if (originAccesses.all { it.walkSeconds == 0 }) {
+        if (query.allowOriginFootpathExpansion && originAccesses.all { it.walkSeconds == 0 }) {
             for (access in originAccesses) {
                 val startStop = access.stopIdx
                 val fpStart = data.footpathOffsets[startStop]
@@ -1132,6 +1256,7 @@ class RaptorEngine {
                     // Не переходим пешком на целевую остановку в раунде 0, иначе bestArrival[target]
                     // обрежет (pruning) все трамваи/автобусы на коротких перегонах вроде Rondo Kaponiera -> Most Teatralny!
                     if (!allowedStop[toStop] || isTargetStop[toStop]) continue
+                    if (data.footpathDistanceMeters[f] > maxFootpathMeters) continue
                     val arr = departureTimeSec + data.footpathWalkSec[f]
                     if (arr < tau[0][toStop]) {
                         tau[0][toStop] = arr
@@ -1203,7 +1328,7 @@ class RaptorEngine {
                         continue
                     }
 
-                    if (currentTrip != -1) {
+                    if (currentTrip != -1 && (boardStop < 0 || data.stopGroupIds[stop] != data.stopGroupIds[boardStop])) {
                         val effectiveArr = data.tripArrivalAt(currentTrip, pos) + currentTripDelay
                         if (effectiveArr < bestArrival[stop] && effectiveArr < targetBest) {
                             tau[k][stop] = effectiveArr
@@ -1226,9 +1351,23 @@ class RaptorEngine {
                     val prevArrAtStop = tau[k - 1][stop]
                     if (prevArrAtStop != INF) {
                         val transferBuffer = if (k > 1) {
-                            // Если пришли пешком по footpath, время пересадки уже учтено в footpathWalkSec,
-                            // иначе добавляем минимальное время пересадки на той же остановке
-                            if (parentType[k - 1][stop] == PARENT_FOOTPATH) 0 else minTransferSec
+                            // Если пришли пешком по footpath, время пересадки уже учтено в footpathWalkSec.
+                            // Для пересадки трамвай -> трамвай на той же остановке в городе разрешаем 2 мин,
+                            // иначе используем minTransferSec (3 мин в режиме «Лучшее»).
+                            if (parentType[k - 1][stop] == PARENT_FOOTPATH) {
+                                0
+                            } else {
+                                val prevTripIdx = parentTrip[k - 1][stop]
+                                val prevIsTram = parentType[k - 1][stop] == PARENT_TRANSIT &&
+                                    prevTripIdx >= 0 &&
+                                    data.patternRouteType[data.tripPatternIndex[prevTripIdx]] == 0
+                                val nextIsTram = data.patternRouteType[p] == 0
+                                if (prevIsTram && nextIsTram) {
+                                    minOf(minTransferSec, 120)
+                                } else {
+                                    minTransferSec
+                                }
+                            }
                         } else {
                             0
                         }
@@ -1255,7 +1394,9 @@ class RaptorEngine {
                                 }
                                 val betterBoardOnSameTrip = candidateTrip == currentTrip && boardStop != -1 && (
                                     (parentType[k - 1][boardStop] == PARENT_FOOTPATH && parentType[k - 1][stop] != PARENT_FOOTPATH) ||
-                                        (parentWalkDist[k - 1][stop] < parentWalkDist[k - 1][boardStop])
+                                        (parentWalkDist[k - 1][stop] < parentWalkDist[k - 1][boardStop]) ||
+                                        (data.stopGroupIds[stop] == data.stopGroupIds[boardStop] &&
+                                            parentWalkDist[k - 1][stop] <= parentWalkDist[k - 1][boardStop] + 80)
                                     )
                                 if (currentTrip == -1 || candDep < curDep || betterBoardOnSameTrip) {
                                     currentTrip = candidateTrip
@@ -1281,8 +1422,12 @@ class RaptorEngine {
                 for (f in fpStart until fpEnd) {
                     val toStop = data.footpathToStop[f]
                     if (!allowedStop[toStop]) continue
-                    // Ограничиваем длину пешей пересадки по профилю (Быстрый ≤300м, Лучший ≤220м, Удобный ≤120м)
-                    if (!isTargetStop[toStop] && data.footpathDistanceMeters[f] > maxFootpathMeters) continue
+                    // Ограничиваем длину пешей пересадки по профилю (Быстрый ≤300м, Лучший ≤220м, Удобный ≤120м);
+                    // для пересадки с/на пригородную электричку (ж/д вокзал / станция) разрешаем до 450 м
+                    val isRailTransfer = data.stopIds[s].startsWith(RAIL_STOP_PREFIX) ||
+                        data.stopIds[toStop].startsWith(RAIL_STOP_PREFIX)
+                    val effectiveMaxFp = if (isRailTransfer) maxOf(maxFootpathMeters, RAIL_TRANSFER_WALK_METERS) else maxFootpathMeters
+                    if (!isTargetStop[toStop] && data.footpathDistanceMeters[f] > effectiveMaxFp) continue
                     val transferTime = if (isTargetStop[toStop]) {
                         data.footpathWalkSec[f]
                     } else {
@@ -1348,7 +1493,7 @@ class RaptorEngine {
                     originAccessMap = originAccessMap,
                     searchDurationMs = elapsedMs,
                     alternativeTag = alternativeTag,
-                    isUlgowyTicket = tripSettings.isUlgowyTicket,
+                    tripSettings = tripSettings,
                     minTransferSec = minTransferSec
                 )
                 if (journey != null) {
@@ -1418,7 +1563,7 @@ class RaptorEngine {
         originAccessMap: Map<Int, OriginAccess>,
         searchDurationMs: Long,
         alternativeTag: JourneyAlternativeTag,
-        isUlgowyTicket: Boolean = false,
+        tripSettings: TripSettings = TripSettings(),
         minTransferSec: Int = MIN_SAME_STOP_TRANSFER_SEC
     ): TransitJourney? {
         val legsReversed = ArrayList<JourneyLeg>(round * 2 + 2)
@@ -1451,6 +1596,12 @@ class RaptorEngine {
                     val arrTime = tau[curRound][curStop]
                     val dist = parentWalkDist[curRound][curStop]
                     val walkSec = GeoUtils.walkingTimeSeconds(dist.toDouble())
+                    val prevBaseTime = tau[curRound][prevStop]
+                    val walkStart = if (prevBaseTime < INF) {
+                        prevBaseTime
+                    } else {
+                        (arrTime - walkSec).coerceAtLeast(departureTimeSec)
+                    }
                     legsReversed.add(
                         JourneyLeg.WalkLeg(
                             fromName = data.stopNames[prevStop],
@@ -1461,8 +1612,8 @@ class RaptorEngine {
                             toLat = data.stopLats[curStop],
                             toLon = data.stopLons[curStop],
                             distanceMeters = dist,
-                            startTimeSec = (arrTime - walkSec).coerceAtLeast(departureTimeSec),
-                            endTimeSec = arrTime
+                            startTimeSec = walkStart,
+                            endTimeSec = walkStart + walkSec
                         )
                     )
                     curStop = prevStop
@@ -1552,7 +1703,8 @@ class RaptorEngine {
             data = data,
             legs = legsReversed.reversed(),
             tripDelays = tripDelays,
-            minTransferSec = minTransferSec
+            minTransferSec = minTransferSec,
+            tripSettings = tripSettings
         )
         val transitLegs = rawLegs.filterIsInstance<JourneyLeg.TransitLeg>()
         if (transitLegs.isEmpty()) return null
@@ -1573,7 +1725,7 @@ class RaptorEngine {
             rawLegs
         }
 
-        val ticket = ZtmTicketCalculator.calculateForLegs(legs, isUlgowy = isUlgowyTicket)
+        val ticket = ZtmTicketCalculator.calculateForLegs(legs, isUlgowy = tripSettings.isUlgowyTicket)
 
         val firstWalk = legs.firstOrNull() as? JourneyLeg.WalkLeg
         val catchability = if (firstWalk != null) {
@@ -1627,7 +1779,8 @@ class RaptorEngine {
         data: RaptorData,
         legs: List<JourneyLeg>,
         tripDelays: Map<String, Int>,
-        minTransferSec: Int
+        minTransferSec: Int,
+        tripSettings: TripSettings
     ): List<JourneyLeg> {
         if (legs.size < 3) return legs
         val result = ArrayList<JourneyLeg>(legs.size)
@@ -1638,22 +1791,26 @@ class RaptorEngine {
             val nextTransit = legs.getOrNull(i + 2) as? JourneyLeg.TransitLeg
 
             if (current is JourneyLeg.TransitLeg && walk != null && nextTransit != null && walk.distanceMeters > 15) {
-                val tripIdx = data.tripIds.indexOf(current.tripId)
+                val tripIdx = data.tripIdToIndex[current.tripId] ?: -1
                 if (tripIdx >= 0) {
                     val patternIdx = data.tripPatternIndex[tripIdx]
                     val pStopCount = data.patternStopCount(patternIdx)
+                    val curBoardStopId = current.boardingStop.stopId
                     val curAlightStopId = current.alightingStop.stopId
+                    val legSpan = current.stops.size - 1
                     var curAlightPos = -1
-                    for (pos in 0 until pStopCount) {
-                        val sIdx = data.patternStopAt(patternIdx, pos)
-                        if (data.stopIds[sIdx] == curAlightStopId) {
-                            curAlightPos = pos
+                    for (pos in 0 until (pStopCount - legSpan)) {
+                        val bIdx = data.patternStopAt(patternIdx, pos)
+                        val aIdx = data.patternStopAt(patternIdx, pos + legSpan)
+                        if (data.stopIds[bIdx] == curBoardStopId && data.stopIds[aIdx] == curAlightStopId) {
+                            curAlightPos = pos + legSpan
                             break
                         }
                     }
 
                     if (curAlightPos in 0 until pStopCount - 1) {
                         val delaySec = tripDelays[current.tripId] ?: current.delaySeconds
+                        val boardNorm = RaptorData.normalizeStopName(current.boardingStop.stopName)
                         var bestPos = -1
                         var bestDist = walk.distanceMeters
                         var bestArrEff = 0
@@ -1661,6 +1818,8 @@ class RaptorEngine {
 
                         for (pos in (curAlightPos + 1) until pStopCount) {
                             val sIdx = data.patternStopAt(patternIdx, pos)
+                            if (!tripSettings.isZoneAllowed(data.stopZones[sIdx])) break
+                            if (RaptorData.normalizeStopName(data.stopNames[sIdx]) == boardNorm) continue
                             val dist = GeoUtils.haversineMeters(
                                 data.stopLats[sIdx], data.stopLons[sIdx],
                                 nextTransit.boardingStop.latitude, nextTransit.boardingStop.longitude
@@ -1728,6 +1887,21 @@ class RaptorEngine {
         return result
     }
 
+    /**
+     * Проверяет классический сценарий въезда в город на автобусе с дальнейшей пересадкой
+     * с трамвая на трамвай в зоне A (2 пересадки: автобус -> трамвай -> трамвай, например 703 -> 17 -> 11).
+     */
+    private fun isBusIntoCityTramToTram(journey: TransitJourney): Boolean {
+        val legs = journey.transitLegs
+        if (legs.size != 3) return false
+        val firstIsBusOrRail = !legs[0].isTram
+        val secondIsTramOrRail = legs[1].isTram || legs[1].isRail
+        val thirdIsTram = legs[2].isTram
+        val transferInCity = legs[1].alightingStop.zoneId.equals("A", ignoreCase = true) ||
+            legs[2].boardingStop.zoneId.equals("A", ignoreCase = true)
+        return firstIsBusOrRail && secondIsTramOrRail && thirdIsTram && transferInCity
+    }
+
     private fun isEveningOrNight(timeSec: Int): Boolean {
         val mod = ((timeSec % 86400) + 86400) % 86400
         return mod >= 21 * 3600 || mod < 5 * 3600
@@ -1768,8 +1942,17 @@ class RaptorEngine {
         private const val MAX_TRANSFER_WALK_BEST_METERS = 220
         private const val MAX_TRANSFER_WALK_CONVENIENT_METERS = 120
         private const val EVENING_MAX_TRANSFER_WALK_METERS = 450
+        private const val RAIL_TRANSFER_WALK_METERS = 450
+        private const val RAIL_STOP_PREFIX = "rail_"
         private const val MIN_SIMPLE_ROUTES_TO_HIDE_TWO_TRANSFERS = 3
         private const val FASTEST_TWO_TRANSFER_MIN_SAVING_SEC = 8 * 60
         private const val MAX_MODAL_ALT_DELAY_SEC = 90 * 60
+
+        private const val MIN_TRANSIT_LEG_DISPLACEMENT_METERS = 120.0
+        private const val MIN_NET_TRANSIT_DISPLACEMENT_METERS = 150.0
+        private const val MIN_PROGRESS_TOWARD_TARGET_METERS = 100.0
+        private const val MIN_WALK_SAVING_METERS = 200.0
+        private const val SHORT_TRIP_WALK_RATIO_MAX_DIST_METERS = 1500.0
+        private const val MAX_SHORT_TRIP_WALK_RATIO = 0.80
     }
 }

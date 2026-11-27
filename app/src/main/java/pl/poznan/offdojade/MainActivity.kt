@@ -24,11 +24,15 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Directions
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
@@ -76,6 +80,7 @@ import pl.poznan.offdojade.ui.details.RouteDetailsScreen
 import pl.poznan.offdojade.ui.home.HomeScreen
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.localization.stringsFor
+import pl.poznan.offdojade.ui.map.LiveMapScreen
 import pl.poznan.offdojade.ui.onboarding.OnboardingScreen
 import pl.poznan.offdojade.ui.results.RouteResultsScreen
 import pl.poznan.offdojade.ui.settings.SettingsScreen
@@ -117,15 +122,17 @@ class MainActivity : ComponentActivity() {
             }
 
             LaunchedEffect(darkTheme) {
+                val barStyle = if (darkTheme) {
+                    SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT
+                    )
+                }
                 enableEdgeToEdge(
-                    statusBarStyle = if (darkTheme) {
-                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-                    } else {
-                        SystemBarStyle.light(
-                            android.graphics.Color.TRANSPARENT,
-                            android.graphics.Color.TRANSPARENT
-                        )
-                    }
+                    statusBarStyle = barStyle,
+                    navigationBarStyle = barStyle
                 )
             }
 
@@ -245,6 +252,7 @@ private fun RequestLocationPermissionOnce() {
 private object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
+    const val LIVE_MAP = "live_map"
     const val RESULTS = "results"
     const val DETAILS = "details"
     const val SETTINGS_TAB = "settings_tab"
@@ -259,7 +267,7 @@ private fun OffDojadeNavGraph(startDestination: String) {
     val currentRoute = backStackEntry?.destination?.route
     val s = LocalStrings.current
 
-    val tabRoutes = setOf(Routes.HOME, Routes.TIMETABLES, Routes.SETTINGS_TAB)
+    val tabRoutes = setOf(Routes.HOME, Routes.LIVE_MAP, Routes.TIMETABLES, Routes.SETTINGS_TAB)
     val showBottomBar = currentRoute in tabRoutes
 
     Scaffold(
@@ -293,7 +301,34 @@ private fun OffDojadeNavGraph(startDestination: String) {
                                 }
                             },
                             icon = { Icon(Icons.Default.Directions, contentDescription = s.navRoute) },
-                            label = { Text(s.navRoute) },
+                            label = {
+                                Text(
+                                    text = s.navRoute,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            colors = navColors
+                        )
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.LIVE_MAP,
+                            onClick = {
+                                navController.navigate(Routes.LIVE_MAP) {
+                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            icon = { Icon(Icons.Default.Map, contentDescription = s.navMap) },
+                            label = {
+                                Text(
+                                    text = s.navMap,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             colors = navColors
                         )
                         NavigationBarItem(
@@ -306,7 +341,14 @@ private fun OffDojadeNavGraph(startDestination: String) {
                                 }
                             },
                             icon = { Icon(Icons.Default.Schedule, contentDescription = s.timetables) },
-                            label = { Text(s.timetables) },
+                            label = {
+                                Text(
+                                    text = s.timetables,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             colors = navColors
                         )
                         NavigationBarItem(
@@ -319,7 +361,14 @@ private fun OffDojadeNavGraph(startDestination: String) {
                                 }
                             },
                             icon = { Icon(Icons.Default.Tune, contentDescription = s.settings) },
-                            label = { Text(s.settings) },
+                            label = {
+                                Text(
+                                    text = s.settings,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             colors = navColors
                         )
                     }
@@ -327,10 +376,12 @@ private fun OffDojadeNavGraph(startDestination: String) {
             }
         }
     ) { innerPadding ->
+        val bottomInset = innerPadding.calculateBottomPadding()
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = innerPadding.calculateBottomPadding())
+                .padding(bottom = bottomInset)
+                .consumeWindowInsets(PaddingValues(bottom = bottomInset))
         ) {
             NavHost(
                 navController = navController,
@@ -373,10 +424,17 @@ private fun OffDojadeNavGraph(startDestination: String) {
                 }
             ) {
                 composable(Routes.ONBOARDING) {
+                    val canGoBack = navController.previousBackStackEntry != null
                     OnboardingScreen(
+                        showBackButton = canGoBack,
+                        onBack = { navController.popBackStack() },
                         onFinished = {
-                            navController.navigate(Routes.HOME) {
-                                popUpTo(Routes.ONBOARDING) { inclusive = true }
+                            if (canGoBack) {
+                                navController.popBackStack()
+                            } else {
+                                navController.navigate(Routes.HOME) {
+                                    popUpTo(Routes.ONBOARDING) { inclusive = true }
+                                }
                             }
                         }
                     )
@@ -394,6 +452,10 @@ private fun OffDojadeNavGraph(startDestination: String) {
                             navController.navigate(Routes.SETTINGS_PUSH)
                         }
                     )
+                }
+
+                composable(Routes.LIVE_MAP) {
+                    LiveMapScreen()
                 }
 
                 composable(Routes.RESULTS) {

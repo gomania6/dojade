@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pl.poznan.offdojade.config.AppConfig
+import pl.poznan.offdojade.data.gtfs.GeoUtils
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
@@ -35,7 +36,8 @@ import java.time.temporal.ChronoUnit
 
 enum class RouteSearchError {
     SCHEDULE_NOT_LOADED,
-    NO_ROUTES_FOUND
+    NO_ROUTES_FOUND,
+    TOO_CLOSE_WALK
 }
 
 data class RouteResultsUiState(
@@ -50,6 +52,8 @@ data class RouteResultsUiState(
     val journeys: List<TransitJourney> = emptyList(),
     val searchDurationMs: Long = 0L,
     val error: RouteSearchError? = null,
+    val directWalkDistanceMeters: Int = 0,
+    val directWalkMinutes: Int = 0,
     val hasActiveFilters: Boolean = false
 )
 
@@ -145,7 +149,7 @@ class RouteResultsViewModel(
                             isLoadingLater = false,
                             noMoreEarlier = cached.noMoreEarlier,
                             noMoreLater = cached.noMoreLater,
-                            referenceNowSec = cached.referenceNowSec,
+                            referenceNowSec = nowSec,
                             journeys = cached.journeys,
                             searchDurationMs = cached.searchDurationMs,
                             error = null,
@@ -216,6 +220,14 @@ class RouteResultsViewModel(
             val targetStopId = (request.to as? RouteEndpoint.Stop)?.group?.primaryStopId
             val targetAddr = request.to as? RouteEndpoint.Address
 
+            val (effOriginLat, effOriginLon) = resolveCoords(graph, originStopId, cachedOriginLat, cachedOriginLon)
+            val (effTargetLat, effTargetLon) = resolveCoords(graph, targetStopId, request.to.latitude, request.to.longitude)
+            val directDistMeters = if (effOriginLat != 0.0 && effTargetLat != 0.0) {
+                GeoUtils.haversineMeters(effOriginLat, effOriginLon, effTargetLat, effTargetLon)
+            } else {
+                Double.MAX_VALUE
+            }
+
             val queryTimeSec = planned.timeSec ?: if (initialDayOffset == 0) nowSec else 8 * 3600
             val activeDelays = if (initialDayOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
 
@@ -257,7 +269,8 @@ class RouteResultsViewModel(
             }
 
             // Если на выбранный день рейсов уже нет (например, поздно ночью) — сразу подгружаем рейсы на следующий день с 00:00
-            if (results.isEmpty() && planned.mode == TimeQueryMode.DEPART_AT) {
+            // (но НЕ для сверхкоротких расстояний <= 700 м, где быстрее дойти пешком)
+            if (results.isEmpty() && planned.mode == TimeQueryMode.DEPART_AT && directDistMeters > WALK_ONLY_THRESHOLD_METERS) {
                 val nextOffset = initialDayOffset + 1
                 val nextDate = today.plusDays(nextOffset.toLong())
                 val nextGraph = transitGraphRepository.buildGraphForDate(nextDate)
@@ -285,12 +298,21 @@ class RouteResultsViewModel(
             }
 
             val durationMs = results.firstOrNull()?.searchDurationMs ?: 0L
+            val isTooClose = results.isEmpty() && directDistMeters <= WALK_ONLY_THRESHOLD_METERS
+            val walkMetersEst = if (isTooClose) (directDistMeters * 1.2).toInt().coerceAtLeast(10) else 0
+            val walkMinsEst = if (isTooClose) ((GeoUtils.walkingTimeSeconds(walkMetersEst.toDouble()) + 30) / 60).coerceAtLeast(1) else 0
             _uiState.update {
                 it.copy(
                     isLoading = false,
                     journeys = results,
                     searchDurationMs = durationMs,
-                    error = if (results.isEmpty()) RouteSearchError.NO_ROUTES_FOUND else null
+                    error = when {
+                        results.isNotEmpty() -> null
+                        isTooClose -> RouteSearchError.TOO_CLOSE_WALK
+                        else -> RouteSearchError.NO_ROUTES_FOUND
+                    },
+                    directWalkDistanceMeters = walkMetersEst,
+                    directWalkMinutes = walkMinsEst
                 )
             }
             if (results.isNotEmpty()) {
@@ -306,35 +328,81 @@ class RouteResultsViewModel(
         val current = _uiState.value
         val request = activeRequest ?: return
         if (current.isLoading || current.isLoadingEarlier || current.noMoreEarlier) return
-        val graph = transitGraphRepository.graph.value ?: return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingEarlier = true) }
             val anchorSec = current.journeys.minOfOrNull { it.departureTimeSec } ?: current.referenceNowSec
-            val existingIds = current.journeys.map { it.id }.toSet()
+            val earliestDayOffset = (anchorSec / 86_400).coerceAtLeast(0)
+            val today = LocalDate.now(ZoneId.of("Europe/Warsaw"))
+            val dayGraph = if (earliestDayOffset == 0) {
+                transitGraphRepository.ensureLoadedForToday()
+            } else {
+                transitGraphRepository.buildGraphForDate(today.plusDays(earliestDayOffset.toLong()))
+            }
+            if (dayGraph == null) {
+                _uiState.update { it.copy(isLoadingEarlier = false, noMoreEarlier = true) }
+                return@launch
+            }
+
+            val dayShiftSec = earliestDayOffset * 86_400
+            val localAnchorSec = (anchorSec - dayShiftSec).coerceAtLeast(0)
+            val delaysForDay = if (earliestDayOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
+            val existingLocalIds = unshiftedIdsForDay(current.journeys, earliestDayOffset)
 
             val originStopId = (request.from as? RouteEndpoint.Stop)?.group?.primaryStopId
             val originName = request.from?.displayName ?: "GPS"
             val targetStopId = (request.to as? RouteEndpoint.Stop)?.group?.primaryStopId
             val targetAddr = request.to as? RouteEndpoint.Address
 
-            val earlier = withContext(Dispatchers.Default) {
+            var earlier = withContext(Dispatchers.Default) {
                 raptorEngine.searchEarlierJourneys(
-                    data = graph,
+                    data = dayGraph,
                     originStopId = originStopId,
                     originLat = cachedOriginLat,
                     originLon = cachedOriginLon,
                     targetStopId = targetStopId,
-                    beforeDepartureSec = anchorSec,
-                    tripDelays = realtimeRepository.tripDelaysSec,
+                    beforeDepartureSec = localAnchorSec,
+                    tripDelays = delaysForDay,
                     tripSettings = currentTripSettings,
                     limit = 5,
-                    excludeIds = existingIds,
+                    excludeIds = existingLocalIds,
                     originName = originName,
                     targetLat = targetAddr?.latitude,
                     targetLon = targetAddr?.longitude,
                     targetName = targetAddr?.displayName
-                )
+                ).map { shiftJourneyByDays(it, earliestDayOffset) }
+            }
+
+            // Если на этом дне раньше 00:00 рейсов нет, а это день > 0 — подгружаем конец предыдущего дня
+            if (earlier.isEmpty() && earliestDayOffset > 0) {
+                val prevOffset = earliestDayOffset - 1
+                val prevGraph = if (prevOffset == 0) {
+                    transitGraphRepository.ensureLoadedForToday()
+                } else {
+                    transitGraphRepository.buildGraphForDate(today.plusDays(prevOffset.toLong()))
+                }
+                if (prevGraph != null) {
+                    val prevDelays = if (prevOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
+                    val prevExistingIds = unshiftedIdsForDay(current.journeys, prevOffset)
+                    earlier = withContext(Dispatchers.Default) {
+                        raptorEngine.searchEarlierJourneys(
+                            data = prevGraph,
+                            originStopId = originStopId,
+                            originLat = cachedOriginLat,
+                            originLon = cachedOriginLon,
+                            targetStopId = targetStopId,
+                            beforeDepartureSec = 86_400,
+                            tripDelays = prevDelays,
+                            tripSettings = currentTripSettings,
+                            limit = 5,
+                            excludeIds = prevExistingIds,
+                            originName = originName,
+                            targetLat = targetAddr?.latitude,
+                            targetLon = targetAddr?.longitude,
+                            targetName = targetAddr?.displayName
+                        ).map { shiftJourneyByDays(it, prevOffset) }
+                    }
+                }
             }
 
             _uiState.update { state ->
@@ -371,7 +439,6 @@ class RouteResultsViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingLater = true) }
             val lastDepSec = current.journeys.maxOfOrNull { it.departureTimeSec } ?: current.referenceNowSec
-            val existingIds = current.journeys.map { it.id }.toSet()
 
             val originStopId = (request.from as? RouteEndpoint.Stop)?.group?.primaryStopId
             val originName = request.from?.displayName ?: "GPS"
@@ -381,6 +448,7 @@ class RouteResultsViewModel(
             val dayShiftSec = loadedDayOffset * 86_400
             val localStartSec = (lastDepSec - dayShiftSec + 60).coerceAtLeast(0)
             val delaysForDay = if (loadedDayOffset == 0) realtimeRepository.tripDelaysSec else emptyMap()
+            val existingLocalIds = unshiftedIdsForDay(current.journeys, loadedDayOffset)
 
             var later = withContext(Dispatchers.Default) {
                 raptorEngine.searchUpcomingJourneys(
@@ -393,7 +461,7 @@ class RouteResultsViewModel(
                     tripDelays = delaysForDay,
                     tripSettings = currentTripSettings,
                     limit = 5,
-                    excludeIds = existingIds,
+                    excludeIds = existingLocalIds,
                     originName = originName,
                     targetLat = targetAddr?.latitude,
                     targetLon = targetAddr?.longitude,
@@ -409,6 +477,7 @@ class RouteResultsViewModel(
                 if (nextGraph != null) {
                     loadedDayOffset = nextOffset
                     activeDayGraph = nextGraph
+                    val nextExistingIds = unshiftedIdsForDay(current.journeys, nextOffset)
                     later = withContext(Dispatchers.Default) {
                         raptorEngine.searchUpcomingJourneys(
                             data = nextGraph,
@@ -420,7 +489,7 @@ class RouteResultsViewModel(
                             tripDelays = emptyMap(),
                             tripSettings = currentTripSettings,
                             limit = 5,
-                            excludeIds = existingIds,
+                            excludeIds = nextExistingIds,
                             originName = originName,
                             targetLat = targetAddr?.latitude,
                             targetLon = targetAddr?.longitude,
@@ -507,7 +576,31 @@ class RouteResultsViewModel(
         )
     }
 
+    private fun resolveCoords(
+        graph: RaptorData,
+        stopId: String?,
+        fallbackLat: Double,
+        fallbackLon: Double
+    ): Pair<Double, Double> {
+        if (!stopId.isNullOrBlank()) {
+            val idx = graph.stopIdToIndex[stopId]
+            if (idx != null) {
+                return graph.stopLats[idx] to graph.stopLons[idx]
+            }
+        }
+        return fallbackLat to fallbackLon
+    }
+
+    private fun unshiftedIdsForDay(journeys: List<TransitJourney>, dayOffset: Int): Set<String> {
+        if (dayOffset <= 0) return journeys.map { it.id }.toSet()
+        val prefix = "d${dayOffset}_"
+        return journeys.mapNotNull { j ->
+            if (j.id.startsWith(prefix)) j.id.removePrefix(prefix) else null
+        }.toSet()
+    }
+
     companion object {
         private const val INITIAL_RESULTS_LIMIT = 8
+        private const val WALK_ONLY_THRESHOLD_METERS = 700.0
     }
 }

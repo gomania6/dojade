@@ -309,13 +309,14 @@ object OfflineMapStyleHelper {
      * Добавляет на карту слой значков главных мест Познани (университеты, достопримечательности,
      * вокзал, парки, ТЦ) в стиле Google Maps. Отображается только при приближении (zoom >= 13.5).
      */
-    fun addPoznanLandmarksLayer(style: Style, isDarkTheme: Boolean) {
+    fun addPoznanLandmarksLayer(style: Style, isDarkTheme: Boolean, density: Float = 2.5f) {
         if (style.getSource(SOURCE_POZNAN_POIS) != null) return
+        val scale = (density / 2.5f).coerceIn(0.75f, 1.5f)
 
         val features = LANDMARKS.map { lm ->
             val iconId = "poi_${lm.id}_${if (isDarkTheme) "d" else "l"}"
             if (style.getImage(iconId) == null) {
-                style.addImage(iconId, createLandmarkBitmap(lm.name, lm.badgeLetter, lm.colorHex, isDarkTheme))
+                style.addImage(iconId, createLandmarkBitmap(lm.name, lm.badgeLetter, lm.colorHex, isDarkTheme, scale))
             }
             Feature.fromGeometry(Point.fromLngLat(lm.lon, lm.lat)).apply {
                 addStringProperty("icon", iconId)
@@ -329,7 +330,7 @@ object OfflineMapStyleHelper {
                     PropertyFactory.iconAllowOverlap(false),
                     PropertyFactory.iconIgnorePlacement(false),
                     PropertyFactory.iconAnchor("left"),
-                    PropertyFactory.iconOffset(arrayOf(-20f, 0f))
+                    PropertyFactory.iconOffset(arrayOf(-20f * scale, 0f))
                 ).apply { minZoom = 13.5f }
         )
     }
@@ -338,27 +339,28 @@ object OfflineMapStyleHelper {
         label: String,
         letter: String,
         colorHex: String,
-        isDarkTheme: Boolean
+        isDarkTheme: Boolean,
+        scale: Float = 1f
     ): Bitmap {
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = if (isDarkTheme) Color.parseColor("#E2E8F0") else Color.parseColor("#1E293B")
-            textSize = 24f
+            textSize = 24f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         val haloPaint = Paint(textPaint).apply {
             color = if (isDarkTheme) Color.parseColor("#0D1522") else Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 5f
+            strokeWidth = 5f * scale
         }
         val textWidth = textPaint.measureText(label)
-        val circleSize = 36f
-        val width = (circleSize + 10f + textWidth + 10f).toInt().coerceAtLeast(64)
-        val height = 44
+        val circleSize = 36f * scale
+        val width = (circleSize + 10f * scale + textWidth + 10f * scale).toInt().coerceAtLeast((64 * scale).toInt())
+        val height = (44f * scale).toInt().coerceAtLeast(32)
 
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val cy = height / 2f
-        val cx = circleSize / 2f + 2f
+        val cx = circleSize / 2f + 2f * scale
 
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor(colorHex)
@@ -367,21 +369,21 @@ object OfflineMapStyleHelper {
         val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 3f
+            strokeWidth = 3f * scale
         }
-        canvas.drawCircle(cx, cy, circleSize / 2f - 2f, bgPaint)
-        canvas.drawCircle(cx, cy, circleSize / 2f - 2f, borderPaint)
+        canvas.drawCircle(cx, cy, circleSize / 2f - 2f * scale, bgPaint)
+        canvas.drawCircle(cx, cy, circleSize / 2f - 2f * scale, borderPaint)
 
         val letterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            textSize = 20f
+            textSize = 20f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textAlign = Paint.Align.CENTER
         }
-        canvas.drawText(letter, cx, cy + 7f, letterPaint)
+        canvas.drawText(letter, cx, cy + 7f * scale, letterPaint)
 
-        val textX = circleSize + 10f
-        val textY = cy + 8f
+        val textX = circleSize + 10f * scale
+        val textY = cy + 8f * scale
         canvas.drawText(label, textX, textY, haloPaint)
         canvas.drawText(label, textX, textY, textPaint)
         return bmp

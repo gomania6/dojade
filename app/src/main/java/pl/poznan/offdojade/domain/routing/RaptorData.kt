@@ -103,6 +103,32 @@ class RaptorData(
     }
 
     /**
+     * Идентификатор логической группы остановки (0..G-1) для каждого `stopIdx`:
+     * все платформы одного узла (например, все перроны "Rondo Kaponiera") получают один и тот же ID.
+     * Используется в RAPTOR за O(1), чтобы запретить абсурдную поездку между платформами одной остановки.
+     */
+    val stopGroupIds: IntArray by lazy {
+        val ids = IntArray(stopCount)
+        var groupId = 0
+        for (indices in stopIndicesByNormalizedName.values) {
+            for (idx in indices) {
+                ids[idx] = groupId
+            }
+            groupId++
+        }
+        ids
+    }
+
+    /** Быстрый O(1)-индекс `tripId -> tripIdx` (вместо линейного сканирования `tripIds.indexOf`). */
+    val tripIdToIndex: Map<String, Int> by lazy {
+        HashMap<String, Int>(tripCount * 2).apply {
+            for (i in 0 until tripCount) {
+                put(tripIds[i], i)
+            }
+        }
+    }
+
+    /**
      * Возвращает все индексы платформ, имеющих то же название, что и [stopId].
      */
     fun findSiblingStopIndices(stopId: String): IntArray {

@@ -25,6 +25,7 @@ import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.ShapeSlicer
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import pl.poznan.offdojade.domain.routing.TransitLegInsight
+import pl.poznan.offdojade.domain.tariff.ZtmTicketCalculator
 import java.io.File
 
 /**
@@ -114,6 +115,8 @@ class RouteDetailsViewModel(
     private fun applyLiveDelaysToCurrentJourney() {
         _uiState.update { state ->
             val current = state.journey ?: return@update state
+            // Живые задержки GTFS-RT относятся только к сегодняшним рейсам
+            if (current.isFutureDay) return@update state
             var changed = false
             val updatedLegs = current.legs.map { leg ->
                 if (leg is JourneyLeg.TransitLeg) {
@@ -139,12 +142,45 @@ class RouteDetailsViewModel(
                 }
             }
             if (!changed) return@update state
-            val firstLeg = updatedLegs.firstOrNull()
-            val lastLeg = updatedLegs.lastOrNull()
+
+            // Синхронизируем стартовый и конечный пешие участки с обновлённым временем транспорта,
+            // чтобы общее время поездки и время прибытия оставались точными
+            val syncedLegs = updatedLegs.mapIndexed { idx, leg ->
+                if (leg is JourneyLeg.WalkLeg) {
+                    val walkDur = leg.durationSec.coerceAtLeast(GeoUtils.walkingTimeSeconds(leg.distanceMeters.toDouble()))
+                    val nextTransit = updatedLegs.getOrNull(idx + 1) as? JourneyLeg.TransitLeg
+                    val prevTransit = updatedLegs.getOrNull(idx - 1) as? JourneyLeg.TransitLeg
+                    when {
+                        idx == 0 && nextTransit != null -> leg.copy(
+                            startTimeSec = nextTransit.startTimeSec - walkDur,
+                            endTimeSec = nextTransit.startTimeSec
+                        )
+                        idx == updatedLegs.lastIndex && prevTransit != null -> leg.copy(
+                            startTimeSec = prevTransit.endTimeSec,
+                            endTimeSec = prevTransit.endTimeSec + walkDur
+                        )
+                        prevTransit != null -> leg.copy(
+                            startTimeSec = prevTransit.endTimeSec,
+                            endTimeSec = prevTransit.endTimeSec + walkDur
+                        )
+                        else -> leg
+                    }
+                } else {
+                    leg
+                }
+            }
+
+            val firstLeg = syncedLegs.firstOrNull()
+            val lastLeg = syncedLegs.lastOrNull()
+            val updatedTicket = ZtmTicketCalculator.calculateForLegs(
+                legs = syncedLegs,
+                isUlgowy = current.ticketRecommendation.isUlgowy
+            )
             val updatedJourney = current.copy(
-                legs = updatedLegs,
+                legs = syncedLegs,
                 departureTimeSec = firstLeg?.startTimeSec ?: current.departureTimeSec,
-                arrivalTimeSec = lastLeg?.endTimeSec ?: current.arrivalTimeSec
+                arrivalTimeSec = lastLeg?.endTimeSec ?: current.arrivalTimeSec,
+                ticketRecommendation = updatedTicket
             )
             state.copy(journey = updatedJourney)
         }
@@ -176,11 +212,18 @@ class RouteDetailsViewModel(
                         }
 
                         is JourneyLeg.TransitLeg -> {
+                            val journeyDayOffset = if (journey.isFutureDay) {
+                                journey.id.removePrefix("d").substringBefore('_').toIntOrNull() ?: 0
+                            } else {
+                                0
+                            }
                             insights[leg.tripId] = transitGraphRepository.computeLegInsight(
                                 boardingStopId = leg.boardingStop.stopId,
                                 alightingStopId = leg.alightingStop.stopId,
                                 routeShortName = leg.routeShortName,
-                                departureTimeSec = leg.boardingStop.scheduledTimeSec
+                                departureTimeSec = leg.boardingStop.scheduledTimeSec,
+                                tripId = leg.tripId,
+                                dayOffset = journeyDayOffset
                             )
                             val colorHex = RouteLegColors.hexForLeg(
                                 transitLegIndex = transitLegIndex,

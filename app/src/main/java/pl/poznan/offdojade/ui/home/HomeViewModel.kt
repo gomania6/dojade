@@ -118,11 +118,6 @@ class HomeViewModel(
         }
         refreshDashboard()
         viewModelScope.launch {
-            realtimeRepository.status.collect {
-                recomputeNearbyBoards()
-            }
-        }
-        viewModelScope.launch {
             preferencesRepository.appSettings.collect { settings ->
                 _uiState.update { it.copy(hasActiveFilters = settings.tripSettings.hasActiveFilters) }
             }
@@ -179,9 +174,10 @@ class HomeViewModel(
 
     fun onFromQueryChange(query: String) {
         _uiState.update {
+            val matchesSelected = it.fromEndpoint?.displayName.equals(query.trim(), ignoreCase = true)
             it.copy(
                 fromQuery = query,
-                fromEndpoint = if (query.isBlank()) null else it.fromEndpoint,
+                fromEndpoint = if (query.isBlank() || !matchesSelected) null else it.fromEndpoint,
                 activeField = ActiveStopField.FROM
             )
         }
@@ -190,9 +186,10 @@ class HomeViewModel(
 
     fun onToQueryChange(query: String) {
         _uiState.update {
+            val matchesSelected = it.toEndpoint?.displayName.equals(query.trim(), ignoreCase = true)
             it.copy(
                 toQuery = query,
-                toEndpoint = if (query.isBlank()) null else it.toEndpoint,
+                toEndpoint = if (query.isBlank() || !matchesSelected) null else it.toEndpoint,
                 activeField = ActiveStopField.TO
             )
         }

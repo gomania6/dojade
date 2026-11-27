@@ -18,6 +18,7 @@ import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import pl.poznan.offdojade.ui.details.RouteDetailsViewModel
 import pl.poznan.offdojade.ui.home.HomeViewModel
+import pl.poznan.offdojade.ui.map.LiveMapViewModel
 import pl.poznan.offdojade.ui.onboarding.OnboardingViewModel
 import pl.poznan.offdojade.ui.results.RouteResultsViewModel
 import pl.poznan.offdojade.ui.settings.SettingsViewModel
@@ -52,4 +53,5 @@ val appModule = module {
     viewModel { RouteDetailsViewModel(get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get()) }
     viewModel { TimetablesViewModel(get(), get()) }
+    viewModel { LiveMapViewModel(get(), get(), get(), get()) }
 }

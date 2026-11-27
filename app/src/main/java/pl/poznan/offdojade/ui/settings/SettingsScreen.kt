@@ -54,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
@@ -233,7 +234,7 @@ fun SettingsScreen(
 
                         HorizontalDivider()
 
-                        // Все виды транспорта
+                        // Реальные виды транспорта в Познани и агломерации (ZTM / PKM)
                         Text(
                             text = s.transportModesLabel,
                             style = MaterialTheme.typography.titleSmall,
@@ -243,7 +244,12 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            TransportMode.entries.forEach { mode ->
+                            listOf(
+                                TransportMode.TRAM,
+                                TransportMode.BUS,
+                                TransportMode.NIGHT,
+                                TransportMode.RAIL
+                            ).forEach { mode ->
                                 val isSelected = mode in trip.enabledTransportModes &&
                                     !(mode == TransportMode.BUS && trip.excludeBuses)
                                 FilterChip(
@@ -366,13 +372,17 @@ fun SettingsScreen(
                             Text(
                                 text = s.minTransferTimeLabel,
                                 style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
                             )
+                            Spacer(Modifier.width(8.dp))
                             Text(
                                 text = s.minTransferValue(trip.minTransferMinutes),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                         Slider(
@@ -400,9 +410,8 @@ fun SettingsScreen(
                 SectionHeader(s.dataAndMapSection)
                 Spacer(Modifier.height(8.dp))
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onOpenSyncAndMap),
+                    onClick = onOpenSyncAndMap,
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
@@ -498,7 +507,13 @@ private fun LineChipEditor(
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
-                placeholder = { Text(placeholder) },
+                placeholder = {
+                    Text(
+                        text = placeholder,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { onAdd() }),

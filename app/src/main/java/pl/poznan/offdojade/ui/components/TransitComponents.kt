@@ -14,13 +14,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +32,7 @@ import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
@@ -78,6 +82,17 @@ object TimeFormatUtils {
         val hours = normalized / 3600
         val minutes = (normalized % 3600) / 60
         return String.format(Locale.US, "%02d:%02d", hours, minutes)
+    }
+
+    fun formatDuration(totalMinutes: Int, strings: AppStrings): String {
+        val mins = totalMinutes.coerceAtLeast(1)
+        return if (mins >= 60) {
+            val h = mins / 60
+            val m = mins % 60
+            if (m == 0) "$h ${strings.hourShort}" else "$h ${strings.hourShort} $m ${strings.minShort}"
+        } else {
+            "$mins ${strings.minShort}"
+        }
     }
 
     fun formatDelayBadge(delaySec: Int, strings: AppStrings? = null): String? {
@@ -168,17 +183,17 @@ fun AnimatedLiveSignal(
 
     Box(
         modifier = modifier
-            .size(20.dp)
+            .size(16.dp)
             .alpha(enterAlpha)
             .scale(enterScale),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(20.dp)) {
+        Canvas(modifier = Modifier.size(16.dp)) {
             val radius = (size.minDimension / 2f) * (0.45f + 0.55f * waveProgress)
             drawCircle(
                 color = tint.copy(alpha = (1f - waveProgress) * 0.42f),
                 radius = radius,
-                style = Stroke(width = 1.5.dp.toPx())
+                style = Stroke(width = 1.4.dp.toPx())
             )
         }
         Icon(
@@ -186,7 +201,7 @@ fun AnimatedLiveSignal(
             contentDescription = null,
             tint = tint,
             modifier = Modifier
-                .size(15.dp)
+                .size(13.dp)
                 .scale(iconPulse)
         )
     }
@@ -250,6 +265,7 @@ fun LineBadge(
     isTram: Boolean,
     colorHex: String? = null,
     textColorHex: String? = null,
+    isRail: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
@@ -264,7 +280,11 @@ fun LineBadge(
             }.getOrNull()
         }
     }
-    val bgColor = parsedColor ?: if (isTram) ZtmTramColor else ZtmBusColor
+    val bgColor = parsedColor ?: when {
+        isRail -> Color(0xFFD32F2F)
+        isTram -> ZtmTramColor
+        else -> ZtmBusColor
+    }
     val bgLuminance = bgColor.luminance()
     val isLightBg = bgLuminance > 0.55f
 
@@ -298,8 +318,16 @@ fun LineBadge(
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Icon(
-                imageVector = if (isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
-                contentDescription = if (isTram) s.modeTram else s.modeBus,
+                imageVector = when {
+                    isRail -> Icons.Default.Train
+                    isTram -> Icons.Default.Tram
+                    else -> Icons.Default.DirectionsBus
+                },
+                contentDescription = when {
+                    isRail -> s.modeRail
+                    isTram -> s.modeTram
+                    else -> s.modeBus
+                },
                 tint = fgColor,
                 modifier = Modifier.size(14.dp)
             )
@@ -319,19 +347,23 @@ fun CatchabilityBadge(
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val okColor = if (isDark) LiveGreen else Color(0xFF1B7A4B)
+    val warnColor = if (isDark) DelayAmber else Color(0xFF9A5B00)
+    val errColor = if (isDark) DelayRed else Color(0xFFB3261E)
     val (color, icon, label) = when (info.status) {
         CatchabilityStatus.COMFORTABLE -> Triple(
-            LiveGreen,
+            okColor,
             Icons.Default.DirectionsWalk,
             s.catchComfortable(info.walkTimeSeconds / 60, info.marginSeconds / 60)
         )
         CatchabilityStatus.HURRY -> Triple(
-            DelayAmber,
+            warnColor,
             Icons.Default.DirectionsRun,
             s.catchHurry((info.walkTimeSeconds + 30) / 60, info.secondsUntilDeparture / 60)
         )
         CatchabilityStatus.TOO_TIGHT -> Triple(
-            DelayRed,
+            errColor,
             Icons.Default.Warning,
             s.catchTooTight(info.walkDistanceMeters)
         )
@@ -380,7 +412,9 @@ fun TicketRecommendationCard(
                 totalStopsPassed = ticket.totalStopsPassed,
                 zones = ticket.zones.toSet(),
                 isUlgowy = showUlgowy,
-                pekaStopGroups = ticket.pekaStopGroups
+                pekaStopGroups = ticket.pekaStopGroups,
+                hasNonZtmPksLeg = ticket.hasNonZtmPksLeg,
+                hasRailLeg = ticket.hasRailLeg
             )
         }
     }
@@ -403,100 +437,131 @@ fun TicketRecommendationCard(
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ConfirmationNumber,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(17.dp)
+                )
+                Text(
+                    text = s.ticketRecommendationTitle,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                Surface(
+                    onClick = { showUlgowy = !showUlgowy },
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (showUlgowy) {
+                        MaterialTheme.colorScheme.tertiaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    }
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ConfirmationNumber,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
                     Text(
-                        text = s.ticketRecommendationTitle,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
+                        text = if (showUlgowy) s.tariffUlgowy else s.tariffNormal,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        color = if (showUlgowy) {
+                            MaterialTheme.colorScheme.onTertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
                 ) {
-                    Surface(
-                        modifier = Modifier.clickable { showUlgowy = !showUlgowy },
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (showUlgowy) {
-                            MaterialTheme.colorScheme.tertiaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        }
-                    ) {
-                        Text(
-                            text = if (showUlgowy) s.tariffUlgowy else s.tariffNormal,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (showUlgowy) {
-                                MaterialTheme.colorScheme.onTertiaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Text(
-                            text = zonesBadge,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
+                    Text(
+                        text = zonesBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
             }
 
             Spacer(Modifier.height(8.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val isPekaWinner = activeTicket.cheapestChoice == CheapestTicketChoice.PEKA_TPORTMONETKA
-                val isTimeWinner = activeTicket.cheapestChoice == CheapestTicketChoice.TIME_TICKET
+            if (activeTicket.hasRailLeg) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Train,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = s.railTicketNotice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isPekaWinner = activeTicket.cheapestChoice == CheapestTicketChoice.PEKA_TPORTMONETKA
+                    val isTimeWinner = activeTicket.cheapestChoice == CheapestTicketChoice.TIME_TICKET
 
-                TicketOptionTile(
-                    title = "PEKA tPortmonetka",
-                    subtitle = "${activeTicket.totalStopsPassed} ${s.stopsShort}",
-                    price = ZtmTicketCalculator.formatPln(activeTicket.pekaCostPln),
-                    isBest = isPekaWinner,
-                    bestBadge = s.cheaperBadge,
-                    modifier = Modifier.weight(1f)
-                )
+                    TicketOptionTile(
+                        title = "PEKA tPortmonetka",
+                        subtitle = "${activeTicket.totalStopsPassed} ${s.stopsShort}",
+                        price = ZtmTicketCalculator.formatPln(activeTicket.pekaCostPln),
+                        isBest = isPekaWinner,
+                        bestBadge = s.cheaperBadge,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
 
-                val localizedTicketDuration = s.ticketDurationLabel(
-                    activeTicket.recommendedTimeTicket.id,
-                    activeTicket.recommendedTimeTicket.maxMinutes
-                )
-                TicketOptionTile(
-                    title = s.timeTicketLabel(localizedTicketDuration),
-                    subtitle = s.estimateMinutes(activeTicket.totalEstimatedMinutes),
-                    price = ZtmTicketCalculator.formatPln(activeTicket.recommendedTimeTicketPricePln),
-                    isBest = isTimeWinner,
-                    bestBadge = s.cheaperBadge,
-                    modifier = Modifier.weight(1f)
-                )
+                    val localizedTicketDuration = s.ticketDurationLabel(
+                        activeTicket.recommendedTimeTicket.id,
+                        activeTicket.recommendedTimeTicket.maxMinutes
+                    )
+                    TicketOptionTile(
+                        title = s.timeTicketLabel(localizedTicketDuration),
+                        subtitle = s.estimateMinutes(activeTicket.totalEstimatedMinutes),
+                        price = ZtmTicketCalculator.formatPln(activeTicket.recommendedTimeTicketPricePln),
+                        isBest = isTimeWinner,
+                        bestBadge = s.cheaperBadge,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
+                }
             }
 
-            if (activeTicket.tightFitWarning != null) {
+            if (!activeTicket.hasRailLeg && activeTicket.tightFitWarning != null) {
                 val pureTicket = pl.poznan.offdojade.config.ZtmTariffConfig.TIME_TICKETS
                     .firstOrNull { activeTicket.pureDurationMinutes <= it.maxMinutes }
                     ?: pl.poznan.offdojade.config.ZtmTariffConfig.TIME_TICKETS.last()
@@ -550,8 +615,10 @@ private fun TicketOptionTile(
     bestBadge: String,
     modifier: Modifier = Modifier
 ) {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val bestAccent = if (isDark) LiveGreen else MaterialTheme.colorScheme.primary
     val bg = if (isBest) {
-        LiveGreen.copy(alpha = 0.15f)
+        bestAccent.copy(alpha = 0.14f)
     } else {
         MaterialTheme.colorScheme.surface
     }
@@ -560,32 +627,45 @@ private fun TicketOptionTile(
         shape = RoundedCornerShape(10.dp),
         color = bg
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            if (isBest) {
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                if (isBest) {
+                    Text(
+                        text = bestBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = bestAccent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Text(
-                    text = bestBadge,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = LiveGreen
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             Spacer(Modifier.height(4.dp))
             Text(
                 text = price,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = if (isBest) LiveGreen else MaterialTheme.colorScheme.onSurface
+                maxLines = 1,
+                color = if (isBest) bestAccent else MaterialTheme.colorScheme.onSurface
             )
         }
     }

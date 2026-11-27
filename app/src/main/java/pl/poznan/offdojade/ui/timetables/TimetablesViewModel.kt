@@ -2,6 +2,7 @@ package pl.poznan.offdojade.ui.timetables
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +20,8 @@ import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 
 enum class LineCategoryFilter {
     TRAMS,
-    BUSES
+    BUSES,
+    RAIL
 }
 
 data class TimetablesUiState(
@@ -44,9 +46,11 @@ data class TimetablesUiState(
                     TextSearchUtils.foldDiacritics(route.shortName).contains(q) ||
                         TextSearchUtils.foldDiacritics(route.longName).contains(q)
                 } else {
+                    val isRailType = route.routeType == 2 || route.routeType == 100 || route.routeType == 109
                     when (categoryFilter) {
                         LineCategoryFilter.TRAMS -> route.routeType == 0
-                        LineCategoryFilter.BUSES -> route.routeType != 0
+                        LineCategoryFilter.BUSES -> route.routeType != 0 && !isRailType
+                        LineCategoryFilter.RAIL -> isRailType
                     }
                 }
             }
@@ -66,6 +70,8 @@ class TimetablesViewModel(
 
     private val _uiState = MutableStateFlow(TimetablesUiState())
     val uiState: StateFlow<TimetablesUiState> = _uiState.asStateFlow()
+
+    private var timetableJob: Job? = null
 
     init {
         loadRoutes()
@@ -109,9 +115,17 @@ class TimetablesViewModel(
     }
 
     fun selectDayType(dayType: TimetableDayType) {
-        val route = _uiState.value.selectedRoute ?: return
-        _uiState.update { it.copy(selectedDayType = dayType, selectedStop = null) }
-        loadTimetable(route, dayType)
+        val state = _uiState.value
+        val route = state.selectedRoute ?: return
+        val preserveStopId = state.selectedStop?.stopId
+        val preserveDirIdx = state.selectedDirectionIdx
+        _uiState.update { it.copy(selectedDayType = dayType) }
+        loadTimetable(
+            route = route,
+            dayType = dayType,
+            preferredDirectionIdx = preserveDirIdx,
+            preferredStopId = preserveStopId
+        )
     }
 
     fun selectDirection(index: Int) {
@@ -126,15 +140,35 @@ class TimetablesViewModel(
         _uiState.update { it.copy(selectedStop = null) }
     }
 
-    private fun loadTimetable(route: RouteEntity, dayType: TimetableDayType) {
-        viewModelScope.launch {
+    private fun loadTimetable(
+        route: RouteEntity,
+        dayType: TimetableDayType,
+        preferredDirectionIdx: Int = 0,
+        preferredStopId: String? = null
+    ) {
+        timetableJob?.cancel()
+        timetableJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoadingTimetable = true, directions = emptyList()) }
             val dirs = transitGraphRepository.loadStaticTimetableForRoute(route, dayType)
+            val safeDirIdx = preferredDirectionIdx.coerceIn(0, (dirs.lastIndex).coerceAtLeast(0))
+            val matchedStop = if (preferredStopId != null) {
+                dirs.getOrNull(safeDirIdx)?.stops?.firstOrNull { it.stopId == preferredStopId }
+                    ?: dirs.firstNotNullOfOrNull { d -> d.stops.firstOrNull { it.stopId == preferredStopId } }
+            } else {
+                null
+            }
+            val resolvedDirIdx = if (matchedStop != null) {
+                dirs.indexOfFirst { d -> d.stops.any { it.stopId == matchedStop.stopId } }
+                    .takeIf { it >= 0 } ?: safeDirIdx
+            } else {
+                safeDirIdx
+            }
             _uiState.update {
                 it.copy(
                     isLoadingTimetable = false,
                     directions = dirs,
-                    selectedDirectionIdx = 0
+                    selectedDirectionIdx = resolvedDirIdx,
+                    selectedStop = if (preferredStopId != null) matchedStop else null
                 )
             }
         }

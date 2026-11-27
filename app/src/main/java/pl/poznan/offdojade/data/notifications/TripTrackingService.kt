@@ -58,31 +58,28 @@ class TripTrackingService : Service() {
             return START_NOT_STICKY
         }
 
+        OffDojadeNotifications.ensureChannels(this)
+
         val journey = transitGraphRepository.selectedJourney.value
         if (journey == null) {
+            // Android 8+ требует вызова startForeground() после startForegroundService() до stopSelf()
+            val fallbackNotif = NotificationCompat.Builder(this, OffDojadeNotifications.CHANNEL_TRIP_TRACKING)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("PyrTransit")
+                .setSilent(true)
+                .build()
+            startForegroundCompat(fallbackNotif)
             stopTracking()
             return START_NOT_STICKY
         }
 
-        OffDojadeNotifications.ensureChannels(this)
         _trackedJourneyId.value = journey.id
 
         val initialNotification = buildTrackingNotification(
             journey = journey,
             vehicles = realtimeRepository.vehicles.value
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                OffDojadeNotifications.NOTIFICATION_ID_TRIP_TRACKING,
-                initialNotification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(
-                OffDojadeNotifications.NOTIFICATION_ID_TRIP_TRACKING,
-                initialNotification
-            )
-        }
+        startForegroundCompat(initialNotification)
 
         trackingJob?.cancel()
         trackingJob = serviceScope.launch {
@@ -100,9 +97,9 @@ class TripTrackingService : Service() {
                 }
 
                 // Автоматически останавливаем отслеживание через 3 минуты после прибытия
-                val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
-                val arrMod = journey.arrivalTimeSec % 86_400
-                if (nowSec > arrMod + 180 && nowSec - arrMod < 3600) {
+                // (без % 86400, чтобы корректно работали ночные рейсы через полночь 23:50 -> 00:15)
+                val nowAligned = alignedNowSec(journey)
+                if (nowAligned > journey.arrivalTimeSec + 180 && nowAligned - journey.arrivalTimeSec < 3600) {
                     stopTracking()
                     break
                 }
@@ -111,6 +108,33 @@ class TripTrackingService : Service() {
         }
 
         return START_NOT_STICKY
+    }
+
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                OffDojadeNotifications.NOTIFICATION_ID_TRIP_TRACKING,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(
+                OffDojadeNotifications.NOTIFICATION_ID_TRIP_TRACKING,
+                notification
+            )
+        }
+    }
+
+    /**
+     * Выравнивает текущее время суток под шкалу секунд маршрута [journey]
+     * (учитывает ночные рейсы после полуночи 24:00..27:59 без разрыва на 00:00).
+     */
+    private fun alignedNowSec(journey: TransitJourney): Int {
+        val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+        if (!journey.isFutureDay && journey.arrivalTimeSec >= 86_400 && nowSec < 6 * 3600) {
+            return nowSec + 86_400
+        }
+        return nowSec
     }
 
     private fun stopTracking() {
@@ -131,10 +155,10 @@ class TripTrackingService : Service() {
         journey: TransitJourney,
         vehicles: List<LiveVehicle>
     ): Notification {
-        val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+        val nowSec = alignedNowSec(journey)
         val transitLegs = journey.transitLegs
-        val totalStart = (journey.departureTimeSec % 86_400)
-        val totalEnd = (journey.arrivalTimeSec % 86_400)
+        val totalStart = journey.departureTimeSec
+        val totalEnd = journey.arrivalTimeSec
         val totalSpan = (totalEnd - totalStart).coerceAtLeast(60)
         val progressPct = (((nowSec - totalStart).toFloat() / totalSpan.toFloat()) * 100f)
             .toInt()
@@ -142,8 +166,9 @@ class TripTrackingService : Service() {
 
         val status = computeLiveTripStatus(
             transitLegs = transitLegs,
-            vehicles = vehicles,
-            nowSec = nowSec
+            vehicles = if (journey.isFutureDay) emptyList() else vehicles,
+            nowSec = nowSec,
+            isFutureDay = journey.isFutureDay
         )
 
         val openAppIntent = PendingIntent.getActivity(
@@ -187,7 +212,8 @@ class TripTrackingService : Service() {
     private fun computeLiveTripStatus(
         transitLegs: List<JourneyLeg.TransitLeg>,
         vehicles: List<LiveVehicle>,
-        nowSec: Int
+        nowSec: Int,
+        isFutureDay: Boolean = false
     ): TripNotificationStatus {
         if (transitLegs.isEmpty()) {
             return TripNotificationStatus(
@@ -197,12 +223,16 @@ class TripTrackingService : Service() {
             )
         }
 
-        // Определяем текущий или ближайший сегмент поездки
+        // Определяем текущий или ближайший сегмент поездки (без % 86400 — сохраняем монотонность через полночь)
         for ((idx, leg) in transitLegs.withIndex()) {
-            val delaySec = realtimeRepository.tripDelaysSec[leg.tripId] ?: leg.delaySeconds
-            val depSec = (leg.boardingStop.scheduledTimeSec % 86_400) + delaySec
-            val arrSec = (leg.alightingStop.scheduledTimeSec % 86_400) + delaySec
-            val icon = if (leg.isTram) "🚋" else "🚌"
+            val delaySec = if (isFutureDay) 0 else (realtimeRepository.tripDelaysSec[leg.tripId] ?: leg.delaySeconds)
+            val depSec = leg.boardingStop.scheduledTimeSec + delaySec
+            val arrSec = leg.alightingStop.scheduledTimeSec + delaySec
+            val icon = when {
+                leg.isRail -> "🚆"
+                leg.isTram -> "🚋"
+                else -> "🚌"
+            }
             val nextLeg = transitLegs.getOrNull(idx + 1)
             val delayTag = if (delaySec >= 60) " (+${delaySec / 60} мин)" else ""
 
@@ -294,7 +324,7 @@ class TripTrackingService : Service() {
 
         var idx = 0
         for (i in leg.stops.indices) {
-            val eff = (leg.stops[i].scheduledTimeSec % 86_400) + delaySec
+            val eff = leg.stops[i].scheduledTimeSec + delaySec
             if (nowSec >= eff) idx = i else break
         }
         return idx
@@ -315,10 +345,10 @@ class TripTrackingService : Service() {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, TripTrackingService::class.java).apply {
-                action = ACTION_STOP
+            _trackedJourneyId.value = null
+            runCatching {
+                context.stopService(Intent(context, TripTrackingService::class.java))
             }
-            context.startService(intent)
         }
     }
 }

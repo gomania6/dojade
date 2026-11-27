@@ -12,10 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -108,32 +110,47 @@ fun MapLocationPickerDialog(
 
     val mapView = remember { MapView(context).apply { onCreate(null) } }
     DisposableEffect(lifecycleOwner, mapView) {
+        var destroyed = false
+        fun destroyOnce() {
+            if (!destroyed) {
+                destroyed = true
+                mapView.onStop()
+                mapView.onDestroy()
+            }
+        }
         val observer = LifecycleEventObserver { _, event ->
+            if (destroyed) return@LifecycleEventObserver
             when (event) {
                 Lifecycle.Event.ON_START -> mapView.onStart()
                 Lifecycle.Event.ON_RESUME -> mapView.onResume()
                 Lifecycle.Event.ON_PAUSE -> mapView.onPause()
                 Lifecycle.Event.ON_STOP -> mapView.onStop()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                Lifecycle.Event.ON_DESTROY -> destroyOnce()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onStop()
-            mapView.onDestroy()
+            destroyOnce()
         }
     }
 
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
+    val density = LocalDensity.current
+    val hitRadiusPx = remember(density) { with(density) { 24.dp.toPx() } }
     var styleInitialized by remember { mutableStateOf(false) }
+    var renderedStopGroups by remember { mutableStateOf<List<StopGroup>?>(null) }
+    val latestStopGroups by rememberUpdatedState(stopGroups)
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Box(
             modifier = Modifier
@@ -145,6 +162,33 @@ fun MapLocationPickerDialog(
                 modifier = Modifier.fillMaxSize(),
                 update = { mv ->
                     mv.getMapAsync { map ->
+                        fun syncStopsSource(style: Style, groups: List<StopGroup>) {
+                            if (renderedStopGroups === groups && style.getSource(SOURCE_PICKER_STOPS) != null) return
+                            renderedStopGroups = groups
+                            val features = groups.map { stop ->
+                                Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
+                                    addStringProperty("id", stop.primaryStopId)
+                                    addStringProperty("name", stop.displayName)
+                                }
+                            }
+                            val collection = FeatureCollection.fromFeatures(features)
+                            val existing = style.getSourceAs<GeoJsonSource>(SOURCE_PICKER_STOPS)
+                            if (existing != null) {
+                                existing.setGeoJson(collection)
+                            } else {
+                                style.addSource(GeoJsonSource(SOURCE_PICKER_STOPS, collection))
+                                style.addLayer(
+                                    CircleLayer(LAYER_PICKER_STOPS, SOURCE_PICKER_STOPS)
+                                        .withProperties(
+                                            PropertyFactory.circleColor("#3FA372"),
+                                            PropertyFactory.circleRadius(6.0f),
+                                            PropertyFactory.circleStrokeWidth(2.0f),
+                                            PropertyFactory.circleStrokeColor(if (isDarkTheme) "#FFFFFF" else "#0F172A")
+                                        ).apply { minZoom = 13.0f }
+                                )
+                            }
+                        }
+
                         if (!styleInitialized) {
                             styleInitialized = true
                             map.cameraPosition = CameraPosition.Builder()
@@ -161,10 +205,10 @@ fun MapLocationPickerDialog(
                             map.addOnMapClickListener { latLng ->
                                 val screenPt = map.projection.toScreenLocation(latLng)
                                 val hitBox = RectF(
-                                    screenPt.x - 30f,
-                                    screenPt.y - 30f,
-                                    screenPt.x + 30f,
-                                    screenPt.y + 30f
+                                    screenPt.x - hitRadiusPx,
+                                    screenPt.y - hitRadiusPx,
+                                    screenPt.x + hitRadiusPx,
+                                    screenPt.y + hitRadiusPx
                                 )
                                 val hit = map.queryRenderedFeatures(hitBox, LAYER_PICKER_STOPS).firstOrNull()
                                 val stopId = hit?.getStringProperty("id")
@@ -174,32 +218,20 @@ fun MapLocationPickerDialog(
                             }
 
                             map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                                OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme)
-                                val features = stopGroups.map { stop ->
-                                    Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
-                                        addStringProperty("id", stop.primaryStopId)
-                                        addStringProperty("name", stop.displayName)
-                                    }
-                                }
-                                loadedStyle.addSource(
-                                    GeoJsonSource(SOURCE_PICKER_STOPS, FeatureCollection.fromFeatures(features))
-                                )
-                                loadedStyle.addLayer(
-                                    CircleLayer(LAYER_PICKER_STOPS, SOURCE_PICKER_STOPS)
-                                        .withProperties(
-                                            PropertyFactory.circleColor("#3FA372"),
-                                            PropertyFactory.circleRadius(6.0f),
-                                            PropertyFactory.circleStrokeWidth(2.0f),
-                                            PropertyFactory.circleStrokeColor(if (isDarkTheme) "#FFFFFF" else "#0F172A")
-                                        ).apply { minZoom = 13.0f }
-                                )
+                                OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
+                                syncStopsSource(loadedStyle, latestStopGroups)
+                            }
+                        } else {
+                            val loadedStyle = map.style
+                            if (loadedStyle != null && loadedStyle.isFullyLoaded) {
+                                syncStopsSource(loadedStyle, stopGroups)
                             }
                         }
                     }
                 }
             )
 
-            // Центральный маркер выбора точки
+            // Центральный маркер выбора точки (кончик пина строго по центру карты)
             Box(
                 modifier = Modifier.align(Alignment.Center),
                 contentAlignment = Alignment.Center
@@ -209,8 +241,8 @@ fun MapLocationPickerDialog(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
+                        .offset(y = (-20).dp)
                         .size(40.dp)
-                        .padding(bottom = 18.dp)
                 )
             }
 
@@ -288,7 +320,7 @@ fun MapLocationPickerDialog(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${s.zonePrefix} ${stop.zones.sorted().joinToString("/")}",
+                                    text = "${s.zonePrefix} ${stop.zones.sorted().joinToString("/").ifEmpty { "A" }}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -384,29 +416,40 @@ fun TimetableStopsMapView(
 
     val mapView = remember { MapView(context).apply { onCreate(null) } }
     DisposableEffect(lifecycleOwner, mapView) {
+        var destroyed = false
+        fun destroyOnce() {
+            if (!destroyed) {
+                destroyed = true
+                mapView.onStop()
+                mapView.onDestroy()
+            }
+        }
         val observer = LifecycleEventObserver { _, event ->
+            if (destroyed) return@LifecycleEventObserver
             when (event) {
                 Lifecycle.Event.ON_START -> mapView.onStart()
                 Lifecycle.Event.ON_RESUME -> mapView.onResume()
                 Lifecycle.Event.ON_PAUSE -> mapView.onPause()
                 Lifecycle.Event.ON_STOP -> mapView.onStop()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                Lifecycle.Event.ON_DESTROY -> destroyOnce()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onStop()
-            mapView.onDestroy()
+            destroyOnce()
         }
     }
 
     val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
         OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
+    val density = LocalDensity.current
+    val hitRadiusPx = remember(density) { with(density) { 24.dp.toPx() } }
     var appliedStyleJson by remember { mutableStateOf<String?>(null) }
     var clickListenerAttached by remember { mutableStateOf(false) }
+    var lastFittedStops by remember { mutableStateOf<List<StaticStopTimetable>?>(null) }
 
     val validStops = remember(stops) {
         stops.filter { it.latitude != 0.0 && it.longitude != 0.0 }
@@ -423,10 +466,10 @@ fun TimetableStopsMapView(
                         map.addOnMapClickListener { latLng ->
                             val screenPt = map.projection.toScreenLocation(latLng)
                             val hitBox = RectF(
-                                screenPt.x - 32f,
-                                screenPt.y - 32f,
-                                screenPt.x + 32f,
-                                screenPt.y + 32f
+                                screenPt.x - hitRadiusPx,
+                                screenPt.y - hitRadiusPx,
+                                screenPt.x + hitRadiusPx,
+                                screenPt.y + hitRadiusPx
                             )
                             val hit = map.queryRenderedFeatures(hitBox, LAYER_TIMETABLE_STOPS).firstOrNull()
                             val stopId = hit?.getStringProperty("id")
@@ -446,6 +489,9 @@ fun TimetableStopsMapView(
                         val existingLine = style.getSourceAs<GeoJsonSource>(SOURCE_TIMETABLE_LINE)
                         if (existingLine != null) {
                             existingLine.setGeoJson(lineCollection)
+                            style.getLayerAs<LineLayer>(LAYER_TIMETABLE_LINE)?.setProperties(
+                                PropertyFactory.lineColor(lineColorHex)
+                            )
                         } else {
                             style.addSource(GeoJsonSource(SOURCE_TIMETABLE_LINE, lineCollection))
                             style.addLayer(
@@ -468,6 +514,9 @@ fun TimetableStopsMapView(
                         val existingStops = style.getSourceAs<GeoJsonSource>(SOURCE_TIMETABLE_STOPS)
                         if (existingStops != null) {
                             existingStops.setGeoJson(stopCollection)
+                            style.getLayerAs<CircleLayer>(LAYER_TIMETABLE_STOPS)?.setProperties(
+                                PropertyFactory.circleStrokeColor(lineColorHex)
+                            )
                         } else {
                             style.addSource(GeoJsonSource(SOURCE_TIMETABLE_STOPS, stopCollection))
                             style.addLayer(
@@ -480,16 +529,19 @@ fun TimetableStopsMapView(
                             )
                         }
 
-                        if (validStops.size >= 2) {
-                            val builder = LatLngBounds.Builder()
-                            validStops.forEach { builder.include(LatLng(it.latitude, it.longitude)) }
-                            runCatching {
-                                map.moveCamera(CameraUpdateFactory.newLatLngBounds(builder.build(), 72))
+                        if (lastFittedStops !== stops) {
+                            lastFittedStops = stops
+                            if (validStops.size >= 2) {
+                                val builder = LatLngBounds.Builder()
+                                validStops.forEach { builder.include(LatLng(it.latitude, it.longitude)) }
+                                runCatching {
+                                    map.moveCamera(CameraUpdateFactory.newLatLngBounds(builder.build(), 72))
+                                }
+                            } else {
+                                val center = validStops.firstOrNull()?.let { LatLng(it.latitude, it.longitude) }
+                                    ?: LatLng(AppConfig.POZNAN_CENTER_LAT, AppConfig.POZNAN_CENTER_LON)
+                                map.cameraPosition = CameraPosition.Builder().target(center).zoom(13.0).build()
                             }
-                        } else {
-                            val center = validStops.firstOrNull()?.let { LatLng(it.latitude, it.longitude) }
-                                ?: LatLng(AppConfig.POZNAN_CENTER_LAT, AppConfig.POZNAN_CENTER_LON)
-                            map.cameraPosition = CameraPosition.Builder().target(center).zoom(13.0).build()
                         }
                     }
 
@@ -497,7 +549,7 @@ fun TimetableStopsMapView(
                     if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
                         appliedStyleJson = styleJson
                         map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
-                            OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme)
+                            OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme, density.density)
                             updateOverlay(loadedStyle)
                         }
                     } else {

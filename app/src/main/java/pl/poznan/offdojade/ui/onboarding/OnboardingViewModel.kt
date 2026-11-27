@@ -16,6 +16,17 @@ import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 
+enum class OnboardingGtfsStage {
+    WAITING,
+    ALREADY_LOADED,
+    CHECKING_GITHUB,
+    DOWNLOADING_DIRECT,
+    FALLBACK_DIRECT,
+    BUILDING_GRAPH,
+    READY_OFFLINE,
+    CUSTOM
+}
+
 data class OnboardingUiState(
     val mapDownloaded: Boolean = false,
     val mapDownloading: Boolean = false,
@@ -24,13 +35,16 @@ data class OnboardingUiState(
     val mapDownloadedMb: Double = 0.0,
     val mapTotalMb: Double = 0.0,
     val mapError: String? = null,
+    val mapErrorIsDefault: Boolean = false,
 
     val gtfsReady: Boolean = false,
     val gtfsSyncing: Boolean = false,
     val gtfsProgress: Float = 0f,
-    val gtfsStage: String = "Ожидание загрузки расписания ZTM Poznań",
+    val gtfsStageType: OnboardingGtfsStage = OnboardingGtfsStage.WAITING,
+    val gtfsStageCustom: String = "",
     val gtfsRowsImported: Int = 0,
-    val gtfsError: String? = null
+    val gtfsError: String? = null,
+    val gtfsErrorIsDefault: Boolean = false
 ) {
     val canContinue: Boolean
         get() = gtfsReady && (mapDownloaded || mapSkipped || !mapDownloading)
@@ -64,7 +78,7 @@ class OnboardingViewModel(
                     mapPercent = if (mapExists) 100 else 0,
                     gtfsReady = dbHasData,
                     gtfsProgress = if (dbHasData) 1f else 0f,
-                    gtfsStage = if (dbHasData) "Расписание ZTM уже загружено" else it.gtfsStage
+                    gtfsStageType = if (dbHasData) OnboardingGtfsStage.ALREADY_LOADED else it.gtfsStageType
                 )
             }
             if (!dbHasData) {
@@ -89,7 +103,8 @@ class OnboardingViewModel(
                 it.copy(
                     mapDownloading = true,
                     mapSkipped = false,
-                    mapError = null
+                    mapError = null,
+                    mapErrorIsDefault = false
                 )
             }
             mapDownloader.downloadMap()
@@ -97,7 +112,8 @@ class OnboardingViewModel(
                     _uiState.update {
                         it.copy(
                             mapDownloading = false,
-                            mapError = e.localizedMessage ?: "Не удалось скачать poznan.pmtiles"
+                            mapError = e.localizedMessage,
+                            mapErrorIsDefault = e.localizedMessage.isNullOrBlank()
                         )
                     }
                 }
@@ -109,7 +125,8 @@ class OnboardingViewModel(
                             mapPercent = progress.percent,
                             mapDownloadedMb = progress.downloadedMb,
                             mapTotalMb = progress.totalMb,
-                            mapError = progress.errorMessage
+                            mapError = progress.errorMessage,
+                            mapErrorIsDefault = false
                         )
                     }
                 }
@@ -134,12 +151,14 @@ class OnboardingViewModel(
                 it.copy(
                     gtfsSyncing = true,
                     gtfsError = null,
+                    gtfsErrorIsDefault = false,
                     gtfsProgress = 0.02f,
-                    gtfsStage = if (AppConfig.isPrebuiltScheduleConfigured()) {
-                        "Проверка готовой базы на GitHub Releases…"
+                    gtfsStageType = if (AppConfig.isPrebuiltScheduleConfigured()) {
+                        OnboardingGtfsStage.CHECKING_GITHUB
                     } else {
-                        "Загрузка GTFS ZTM Poznań…"
-                    }
+                        OnboardingGtfsStage.DOWNLOADING_DIRECT
+                    },
+                    gtfsStageCustom = ""
                 )
             }
 
@@ -150,7 +169,8 @@ class OnboardingViewModel(
                         _uiState.update {
                             it.copy(
                                 gtfsProgress = progress.progress,
-                                gtfsStage = progress.stage,
+                                gtfsStageType = OnboardingGtfsStage.CUSTOM,
+                                gtfsStageCustom = progress.stage,
                                 gtfsRowsImported = progress.rowsImported
                             )
                         }
@@ -160,7 +180,10 @@ class OnboardingViewModel(
                     }
                 } catch (_: Exception) {
                     _uiState.update {
-                        it.copy(gtfsStage = "GitHub недоступен — загрузка напрямую с ZTM Poznań…")
+                        it.copy(
+                            gtfsStageType = OnboardingGtfsStage.FALLBACK_DIRECT,
+                            gtfsStageCustom = ""
+                        )
                     }
                 }
             }
@@ -175,7 +198,8 @@ class OnboardingViewModel(
                     _uiState.update {
                         it.copy(
                             gtfsSyncing = false,
-                            gtfsError = e.localizedMessage ?: "Ошибка загрузки расписания ZTM"
+                            gtfsError = e.localizedMessage,
+                            gtfsErrorIsDefault = e.localizedMessage.isNullOrBlank()
                         )
                     }
                 }
@@ -183,7 +207,8 @@ class OnboardingViewModel(
                     _uiState.update {
                         it.copy(
                             gtfsProgress = progress.progress,
-                            gtfsStage = progress.stage,
+                            gtfsStageType = OnboardingGtfsStage.CUSTOM,
+                            gtfsStageCustom = progress.stage,
                             gtfsRowsImported = progress.rowsImported
                         )
                     }
@@ -195,7 +220,12 @@ class OnboardingViewModel(
     }
 
     private suspend fun finalizeGraphReload() {
-        _uiState.update { it.copy(gtfsStage = "Построение быстрого графа RAPTOR…") }
+        _uiState.update {
+            it.copy(
+                gtfsStageType = OnboardingGtfsStage.BUILDING_GRAPH,
+                gtfsStageCustom = ""
+            )
+        }
         transitGraphRepository.reloadForToday()
         transitGraphRepository.searchStopGroups("", limit = 1)
         preferencesRepository.setOnboardingCompleted(true)
@@ -204,7 +234,8 @@ class OnboardingViewModel(
                 gtfsSyncing = false,
                 gtfsReady = true,
                 gtfsProgress = 1f,
-                gtfsStage = "Готово к работе офлайн!"
+                gtfsStageType = OnboardingGtfsStage.READY_OFFLINE,
+                gtfsStageCustom = ""
             )
         }
     }

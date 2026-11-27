@@ -33,6 +33,9 @@ class DatabaseHolder(private val context: Context) {
     fun graphCacheFileForDate(dateYyyymmdd: Int): File =
         File(context.cacheDir, "raptor_graph_v1_$dateYyyymmdd.bin")
 
+    fun tempGtfsZipFile(): File =
+        File(context.cacheDir, "ztm_gtfs_download.zip.tmp")
+
     fun clearGraphCaches() {
         context.cacheDir.listFiles { f -> f.name.startsWith("raptor_graph_v1") }
             ?.forEach { runCatching { it.delete() } }

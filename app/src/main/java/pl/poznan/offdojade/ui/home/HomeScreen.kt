@@ -19,6 +19,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,12 +31,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -73,17 +82,22 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -177,6 +191,8 @@ fun HomeScreen(
     var showTimePickerDialog by remember { mutableStateOf(false) }
     var mapPickerField by remember { mutableStateOf<ActiveStopField?>(null) }
     var mapPickerStops by remember { mutableStateOf<List<StopGroup>>(emptyList()) }
+    val fromFocusRequester = remember { FocusRequester() }
+    val toFocusRequester = remember { FocusRequester() }
 
     BackHandler(enabled = isSearchMode) {
         focusManager.clearFocus()
@@ -229,6 +245,7 @@ fun HomeScreen(
 
                 // Поле 1: Откуда (зелёная точка)
                 Surface(
+                    onClick = { fromFocusRequester.requestFocus() },
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier
@@ -272,6 +289,7 @@ fun HomeScreen(
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .focusRequester(fromFocusRequester)
                                     .onFocusChanged { focusState ->
                                         if (focusState.isFocused) {
                                             viewModel.onFieldFocused(ActiveStopField.FROM)
@@ -297,6 +315,7 @@ fun HomeScreen(
 
                 // Поле 2: Куда (синяя точка) + кнопка Swap
                 Surface(
+                    onClick = { toFocusRequester.requestFocus() },
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier
@@ -340,6 +359,7 @@ fun HomeScreen(
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .focusRequester(toFocusRequester)
                                     .onFocusChanged { focusState ->
                                         if (focusState.isFocused) {
                                             viewModel.onFieldFocused(ActiveStopField.TO)
@@ -403,7 +423,8 @@ fun HomeScreen(
                     }
 
                     Surface(
-                        modifier = Modifier.clickable { showTimePickerDialog = true },
+                        onClick = { showTimePickerDialog = true },
+                        modifier = Modifier.weight(1f, fill = false),
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
@@ -421,7 +442,10 @@ fun HomeScreen(
                             Text(
                                 text = timeChipText,
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowDown,
@@ -432,8 +456,10 @@ fun HomeScreen(
                         }
                     }
 
+                    Spacer(Modifier.width(8.dp))
+
                     Surface(
-                        modifier = Modifier.clickable(onClick = onOpenSettings),
+                        onClick = onOpenSettings,
                         shape = RoundedCornerShape(50),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
@@ -445,7 +471,9 @@ fun HomeScreen(
                             Text(
                                 text = s.optionsLabel,
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                             Box {
                                 Icon(
@@ -510,16 +538,15 @@ fun HomeScreen(
             if (isSearchMode) {
                 item(key = "pick_on_map_action") {
                     Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                val field = state.activeField ?: return@clickable
-                                focusManager.clearFocus()
-                                mapPickerField = field
-                                scope.launch {
-                                    mapPickerStops = viewModel.getAllStopGroupsForMap()
-                                }
-                            },
+                        onClick = {
+                            val field = state.activeField ?: return@Surface
+                            focusManager.clearFocus()
+                            mapPickerField = field
+                            scope.launch {
+                                mapPickerStops = viewModel.getAllStopGroupsForMap()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surface,
                         border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -755,11 +782,18 @@ fun HomeScreen(
                 // 1. Быстрые маршруты (в едином AMOLED-стиле)
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = s.quickRoutesTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = s.quickRoutesTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = s.quickRoutesHint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1001,11 +1035,17 @@ fun HomeScreen(
                     OutlinedTextField(
                         value = state.slotSearchQuery,
                         onValueChange = viewModel::onSlotSearchQueryChange,
-                        placeholder = { Text(s.searchStopPlaceholder) },
+                        placeholder = {
+                            Text(
+                                text = s.searchStopPlaceholder,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    LazyColumn(modifier = Modifier.height(260.dp)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 260.dp)) {
                         items(state.slotSearchResults, key = { it.primaryStopId }) { group ->
                             Row(
                                 modifier = Modifier
@@ -1039,7 +1079,7 @@ fun HomeScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlanTimeDialog(
     initial: PlannedTime,
@@ -1052,243 +1092,263 @@ private fun PlanTimeDialog(
     val today = remember { LocalDate.now(warsawZone) }
     val now = remember { LocalTime.now(warsawZone) }
     val initialMinutes = (initial.timeSec ?: now.toSecondOfDay()) / 60
-    var mode by remember { mutableStateOf(initial.mode) }
-    var selectedDate by remember { mutableStateOf(initial.resolveDate(today)) }
-    var hour by remember { mutableIntStateOf((initialMinutes / 60) % 24) }
-    var minute by remember { mutableIntStateOf(initialMinutes % 60) }
-    var showCalendarPicker by remember { mutableStateOf(false) }
+    val initialDate = initial.resolveDate(today)
 
-    val dateFormatter = remember { DateTimeFormatter.ofPattern("dd.MM.yyyy (EEE)", Locale.getDefault()) }
-
-    if (showCalendarPicker) {
-        val initialMillis = selectedDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
-        DatePickerDialog(
-            onDismissRequest = { showCalendarPicker = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        datePickerState.selectedDateMillis?.let { millis ->
-                            val picked = Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()
-                            if (!picked.isBefore(today)) {
-                                selectedDate = picked
-                            }
-                        }
-                        showCalendarPicker = false
-                    }
-                ) {
-                    Text(s.doneLabel)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCalendarPicker = false }) {
-                    Text(s.close)
-                }
+    val dateOptions = remember(today) {
+        (0..14).map { today.plusDays(it.toLong()) }
+    }
+    val locale = remember(s.localeTag) { Locale.forLanguageTag(s.localeTag) }
+    val wheelDateFmt = remember(locale) { DateTimeFormatter.ofPattern("EEE d MMM", locale) }
+    val dateLabels = remember(dateOptions, s.todayLabel, wheelDateFmt) {
+        dateOptions.mapIndexed { idx, date ->
+            if (idx == 0) {
+                s.todayLabel
+            } else {
+                date.format(wheelDateFmt).replaceFirstChar { it.titlecase(locale) }
             }
-        ) {
-            DatePicker(state = datePickerState)
         }
     }
+    val hourLabels = remember { (0..23).map { String.format(Locale.US, "%02d", it) } }
+    val minuteLabels = remember { (0..59).map { String.format(Locale.US, "%02d", it) } }
 
-    AlertDialog(
+    var mode by remember { mutableStateOf(initial.mode) }
+    var selectedDateIdx by remember {
+        mutableIntStateOf(dateOptions.indexOf(initialDate).coerceIn(0, dateOptions.lastIndex))
+    }
+    var selectedHour by remember { mutableIntStateOf((initialMinutes / 60) % 24) }
+    var selectedMinute by remember { mutableIntStateOf(initialMinutes % 60) }
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text(s.planTimeTitle, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // Режим: Отправление / Прибытие
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilterChip(
-                        selected = mode == TimeQueryMode.DEPART_AT,
-                        onClick = { mode = TimeQueryMode.DEPART_AT },
-                        label = { Text(s.departAtLabel) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        selected = mode == TimeQueryMode.ARRIVE_BY,
-                        onClick = { mode = TimeQueryMode.ARRIVE_BY },
-                        label = { Text(s.arriveByLabel) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // Выбор даты: Сегодня / Завтра / Послезавтра
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FilterChip(
-                        selected = selectedDate == today,
-                        onClick = { selectedDate = today },
-                        label = { Text(s.todayLabel) }
-                    )
-                    FilterChip(
-                        selected = selectedDate == today.plusDays(1),
-                        onClick = { selectedDate = today.plusDays(1) },
-                        label = { Text(s.tomorrowLabel) }
-                    )
-                    FilterChip(
-                        selected = selectedDate == today.plusDays(2),
-                        onClick = { selectedDate = today.plusDays(2) },
-                        label = { Text(s.dayAfterTomorrowLabel) }
-                    )
-                }
-
-                // Переключатель произвольной даты + кнопка календаря
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            // Верхняя строка: [ Отправление | Прибытие ] + Сбросить (адаптивно под узкие экраны и RU/UK/DE)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.weight(1f, fill = false),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        IconButton(
-                            onClick = {
-                                if (selectedDate.isAfter(today)) {
-                                    selectedDate = selectedDate.minusDays(1)
-                                }
-                            },
-                            enabled = selectedDate.isAfter(today),
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(Icons.Default.ChevronLeft, contentDescription = null)
-                        }
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showCalendarPicker = true }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CalendarMonth,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = selectedDate.format(dateFormatter),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        IconButton(
-                            onClick = { selectedDate = selectedDate.plusDays(1) },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(Icons.Default.ChevronRight, contentDescription = null)
-                        }
-                    }
-                }
-
-                // Быстрые пресеты времени
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FilterChip(
-                        selected = false,
-                        onClick = onResetNow,
-                        label = { Text(s.nowLabel) }
-                    )
-                    listOf(15, 30, 60).forEach { addMin ->
-                        FilterChip(
-                            selected = false,
-                            onClick = {
-                                val targetDateTime = LocalTime.now(warsawZone).plusMinutes(addMin.toLong())
-                                if (targetDateTime.isBefore(LocalTime.now(warsawZone))) {
-                                    selectedDate = today.plusDays(1)
+                    Row(modifier = Modifier.padding(3.dp)) {
+                        listOf(
+                            TimeQueryMode.DEPART_AT to s.departAtLabel,
+                            TimeQueryMode.ARRIVE_BY to s.arriveByLabel
+                        ).forEach { (tabMode, tabLabel) ->
+                            val selected = mode == tabMode
+                            Surface(
+                                onClick = { mode = tabMode },
+                                shape = RoundedCornerShape(50),
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.background
                                 } else {
-                                    selectedDate = today
+                                    androidx.compose.ui.graphics.Color.Transparent
                                 }
-                                hour = targetDateTime.hour
-                                minute = targetDateTime.minute
-                            },
-                            label = { Text("+$addMin ${s.minShort}") }
-                        )
+                            ) {
+                                Text(
+                                    text = tabLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onBackground
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
                     }
                 }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = s.resetLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onResetNow)
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                )
+            }
 
-                // Выбор часа и минут
+            // 3 барабана (Дата | Часы | Минуты) с общей центральной подсветкой как в Jakdojade
+            val itemHeight = 44.dp
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(itemHeight * 5),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(itemHeight),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+                ) {}
+
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TimeStepper(
-                        value = hour,
-                        onDecrement = { hour = (hour + 23) % 24 },
-                        onIncrement = { hour = (hour + 1) % 24 }
+                    WheelPickerColumn(
+                        items = dateLabels,
+                        initialIndex = selectedDateIdx,
+                        onSelectedIndexChange = { selectedDateIdx = it },
+                        itemHeight = itemHeight,
+                        modifier = Modifier.weight(1.75f)
                     )
-                    Text(
-                        text = ":",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 10.dp)
+                    WheelPickerColumn(
+                        items = hourLabels,
+                        initialIndex = selectedHour,
+                        onSelectedIndexChange = { selectedHour = it },
+                        itemHeight = itemHeight,
+                        modifier = Modifier.weight(0.75f)
                     )
-                    TimeStepper(
-                        value = minute,
-                        onDecrement = { minute = (minute + 55) % 60 },
-                        onIncrement = { minute = (minute + 5) % 60 }
+                    WheelPickerColumn(
+                        items = minuteLabels,
+                        initialIndex = selectedMinute,
+                        onSelectedIndexChange = { selectedMinute = it },
+                        itemHeight = itemHeight,
+                        modifier = Modifier.weight(0.75f)
                     )
                 }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(s.close)
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val epochDay = if (selectedDate == today) null else selectedDate.toEpochDay()
-                    onConfirm(
-                        PlannedTime(
-                            mode = mode,
-                            timeSec = hour * 3600 + minute * 60,
-                            dateEpochDay = epochDay
-                        )
-                    )
-                }
+
+            // Кнопки Сохранить + Отменить
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(s.doneLabel)
+                Button(
+                    onClick = {
+                        val pickedDate = dateOptions.getOrElse(selectedDateIdx) { today }
+                        val epochDay = if (pickedDate == today) null else pickedDate.toEpochDay()
+                        onConfirm(
+                            PlannedTime(
+                                mode = mode,
+                                timeSec = selectedHour * 3600 + selectedMinute * 60,
+                                dateEpochDay = epochDay
+                            )
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text(
+                        text = s.saveLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = s.cancelLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
-private fun TimeStepper(
-    value: Int,
-    onDecrement: () -> Unit,
-    onIncrement: () -> Unit
+private fun WheelPickerColumn(
+    items: List<String>,
+    initialIndex: Int,
+    onSelectedIndexChange: (Int) -> Unit,
+    itemHeight: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onIncrement) {
-            Icon(Icons.Default.Add, contentDescription = null)
+    val safeInitial = initialIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeInitial)
+    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+    val scope = rememberCoroutineScope()
+
+    val centerIndex by remember {
+        derivedStateOf {
+            val layoutInfo = listState.layoutInfo
+            val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+            layoutInfo.visibleItemsInfo
+                .minByOrNull { kotlin.math.abs((it.offset + it.size / 2) - viewportCenter) }
+                ?.index
+                ?.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+                ?: safeInitial
         }
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant
-        ) {
-            Text(
-                text = String.format(Locale.US, "%02d", value),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
-            )
+    }
+
+    LaunchedEffect(listState) {
+        snapshotFlow { centerIndex }.collect { idx ->
+            onSelectedIndexChange(idx)
         }
-        IconButton(onClick = onDecrement) {
-            Icon(Icons.Default.Remove, contentDescription = null)
+    }
+
+    LazyColumn(
+        state = listState,
+        flingBehavior = flingBehavior,
+        contentPadding = PaddingValues(vertical = itemHeight * 2),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.height(itemHeight * 5)
+    ) {
+        itemsIndexed(items) { index, label ->
+            val distance = kotlin.math.abs(index - centerIndex)
+            val alpha = when (distance) {
+                0 -> 1f
+                1 -> 0.52f
+                else -> 0.24f
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(itemHeight)
+                    .clickable {
+                        scope.launch { listState.animateScrollToItem(index) }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = if (distance == 0) FontWeight.SemiBold else FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -1379,12 +1439,15 @@ private fun QuickDestinationCard(
         QuickDestinationSlot.WORK -> Icons.Default.Work
     }
 
+    val cardShape = RoundedCornerShape(14.dp)
     Surface(
-        modifier = modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = onLongClick
-        ),
-        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .clip(cardShape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        shape = cardShape,
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
@@ -1402,7 +1465,8 @@ private fun QuickDestinationCard(
                 text = destination.title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = destination.stopName ?: s.setStopPlaceholder,
@@ -1524,93 +1588,6 @@ private fun StopGroupSearchRow(
                 contentDescription = s.favoriteTooltip,
                 tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-    }
-}
-
-@Composable
-private fun NearbyStopCard(
-    board: NearbyStopBoard,
-    onClick: () -> Unit
-) {
-    val s = LocalStrings.current
-    val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Column {
-                Text(
-                    text = board.stopName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                val platformsInfo = if (board.platformCount > 1) " • ${board.platformCount} ${s.platformsShort}" else ""
-                Text(
-                    text = "${s.walkApprox(board.distanceMeters, (board.walkTimeSeconds + 30) / 60)} • ${s.zonePrefix} ${board.zoneId}$platformsInfo",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (board.departures.isEmpty()) {
-                Text(
-                    text = s.noUpcomingDepartures,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                board.departures.forEach { dep ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        LineBadge(
-                            shortName = dep.routeShortName,
-                            isTram = dep.routeType == 0,
-                            colorHex = dep.routeColorHex
-                        )
-                        Text(
-                            text = dep.headsign.ifBlank { s.onSchedule },
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = TimeFormatUtils.formatRelativeDeparture(dep.effectiveTimeSec, nowSec, s),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            val delayText = TimeFormatUtils.formatDelayBadge(dep.delaySeconds, s)
-                            if (delayText != null) {
-                                Text(
-                                    text = delayText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (dep.delaySeconds > 0) DelayRed else MaterialTheme.colorScheme.primary
-                                )
-                            } else {
-                                Text(
-                                    text = TimeFormatUtils.formatClock(dep.effectiveTimeSec),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }

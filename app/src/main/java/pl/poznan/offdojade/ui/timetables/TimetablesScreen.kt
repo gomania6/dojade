@@ -1,6 +1,13 @@
 package pl.poznan.offdojade.ui.timetables
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import kotlinx.coroutines.delay
+import java.time.ZoneId
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -38,6 +45,7 @@ import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -102,6 +110,8 @@ fun TimetablesScreen(
             else -> onBack()
         }
     }
+
+    BackHandler(enabled = isNested, onBack = handleBack)
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -209,7 +219,13 @@ private fun LinesBrowserView(
         OutlinedTextField(
             value = state.searchQuery,
             onValueChange = onSearchChange,
-            placeholder = { Text(s.searchLinePlaceholder) },
+            placeholder = {
+                Text(
+                    text = s.searchLinePlaceholder,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
             trailingIcon = {
                 if (state.searchQuery.isNotEmpty()) {
@@ -225,8 +241,12 @@ private fun LinesBrowserView(
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         )
 
-        // Вкладки «Трамваи» / «Автобусы» как в Jakdojade
-        val selectedTab = if (state.categoryFilter == LineCategoryFilter.TRAMS) 0 else 1
+        // Вкладки «Трамваи» / «Автобусы» / «Поезда» (KW / Polregio)
+        val selectedTab = when (state.categoryFilter) {
+            LineCategoryFilter.TRAMS -> 0
+            LineCategoryFilter.BUSES -> 1
+            LineCategoryFilter.RAIL -> 2
+        }
         TabRow(selectedTabIndex = selectedTab) {
             Tab(
                 selected = selectedTab == 0,
@@ -234,10 +254,15 @@ private fun LinesBrowserView(
                 text = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        Icon(Icons.Default.Tram, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text(s.filterTrams, fontWeight = FontWeight.SemiBold)
+                        Icon(Icons.Default.Tram, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = s.filterTrams,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             )
@@ -247,10 +272,33 @@ private fun LinesBrowserView(
                 text = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        Icon(Icons.Default.DirectionsBus, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text(s.filterBuses, fontWeight = FontWeight.SemiBold)
+                        Icon(Icons.Default.DirectionsBus, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = s.filterBuses,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            )
+            Tab(
+                selected = selectedTab == 2,
+                onClick = { onCategoryChange(LineCategoryFilter.RAIL) },
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(Icons.Default.Train, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = s.filterRail,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             )
@@ -307,9 +355,9 @@ private fun LinesBrowserView(
             }
 
             else -> {
-                // Компактная сетка номеров линий (6 в ряд) со стройными плашками как в поиске маршрутов
+                // Адаптивная сетка номеров линий (под узкие экраны и увеличенные шрифты)
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(6),
+                    columns = GridCells.Adaptive(minSize = 56.dp),
                     contentPadding = PaddingValues(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -318,10 +366,10 @@ private fun LinesBrowserView(
                     items(state.filteredRoutes, key = { it.routeId }) { route ->
                         val isNightBus = TransportMode.isNightLine(route.shortName)
                         Surface(
+                            onClick = { onSelectRoute(route) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(34.dp)
-                                .clickable { onSelectRoute(route) },
+                                .defaultMinSize(minHeight = 38.dp),
                             shape = RoundedCornerShape(7.dp),
                             color = if (isNightBus) NightBusWhite else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(
@@ -333,13 +381,18 @@ private fun LinesBrowserView(
                                 }
                             )
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                            ) {
                                 Text(
                                     text = route.shortName,
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isNightBus) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -387,7 +440,26 @@ private fun RouteStopsView(
             return
         }
 
-        if (state.directions.size > 1) {
+        if (state.directions.size > 2) {
+            ScrollableTabRow(
+                selectedTabIndex = state.selectedDirectionIdx.coerceIn(0, state.directions.lastIndex),
+                edgePadding = 12.dp
+            ) {
+                state.directions.forEachIndexed { index, dir ->
+                    Tab(
+                        selected = state.selectedDirectionIdx == index,
+                        onClick = { onSelectDirection(index) },
+                        text = {
+                            Text(
+                                text = "→ ${dir.headsign}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                }
+            }
+        } else if (state.directions.size > 1) {
             TabRow(selectedTabIndex = state.selectedDirectionIdx.coerceIn(0, state.directions.lastIndex)) {
                 state.directions.forEachIndexed { index, dir ->
                     Tab(
@@ -447,8 +519,13 @@ private fun RouteStopsView(
 
         val currentDir = state.currentDirection ?: return
         if (showMapView) {
-            val isTram = state.selectedRoute?.routeType == 0
-            val lineColorHex = if (isTram) "#3FA372" else "#4B83C3"
+            val rType = state.selectedRoute?.routeType ?: 3
+            val isRail = rType == 2 || rType == 100 || rType == 109
+            val lineColorHex = when {
+                isRail -> "#D32F2F"
+                rType == 0 -> "#3FA372"
+                else -> "#4B83C3"
+            }
             TimetableStopsMapView(
                 stops = currentDir.stops,
                 lineColorHex = lineColorHex,
@@ -464,11 +541,15 @@ private fun RouteStopsView(
             ) {
                 items(currentDir.stops, key = { it.stopId }) { stop ->
                     Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(enabled = !stop.isTerminal) { onSelectStop(stop) },
+                        onClick = { onSelectStop(stop) },
+                        enabled = !stop.isTerminal,
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            disabledContainerColor = MaterialTheme.colorScheme.surface,
+                            disabledContentColor = MaterialTheme.colorScheme.onSurface
+                        )
                     ) {
                         Row(
                             modifier = Modifier
@@ -515,7 +596,15 @@ private fun StopTimetableGrid(
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
-    val nowSec = remember { LocalTime.now().toSecondOfDay() }
+    var nowSec by remember {
+        mutableIntStateOf(LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay())
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+        }
+    }
 
     // Группируем отправления по часу (0..27 -> отображаем % 24)
     val byHour = remember(stop.departures) {
@@ -584,20 +673,22 @@ private fun StopTimetableGrid(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = s.hourColumn,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.width(52.dp)
+                        maxLines = 1,
+                        modifier = Modifier.width(44.dp)
                     )
                     Text(
                         text = s.minutesColumn,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
                 }
                 HorizontalDivider()

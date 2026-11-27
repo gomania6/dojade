@@ -24,12 +24,16 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,11 +41,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
@@ -91,6 +97,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.CheapestTicketChoice
+import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.tariff.ZtmTicketCalculator
@@ -149,7 +156,9 @@ fun RouteResultsScreen(
                             Text(
                                 text = s.foundVariantsMeta(state.journeys.size, state.searchDurationMs),
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     },
@@ -323,12 +332,17 @@ fun RouteResultsScreen(
                                 text = when (state.error) {
                                     RouteSearchError.SCHEDULE_NOT_LOADED -> s.scheduleNotLoadedError
                                     RouteSearchError.NO_ROUTES_FOUND -> s.noRoutesFound
+                                    RouteSearchError.TOO_CLOSE_WALK -> s.tooCloseWalkHint(
+                                        state.directWalkDistanceMeters,
+                                        state.directWalkMinutes
+                                    )
                                     null -> ""
                                 },
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                             )
-                            if (state.hasActiveFilters) {
+                            if (state.hasActiveFilters && state.error != RouteSearchError.TOO_CLOSE_WALK) {
                                 OutlinedButton(onClick = onOpenSettings) {
                                     Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
@@ -346,9 +360,11 @@ fun RouteResultsScreen(
                     val latestCanLoadLater by rememberUpdatedState(
                         !state.isLoadingLater && !state.noMoreLater && state.journeys.isNotEmpty()
                     )
+                    val density = LocalDensity.current
+                    val overscrollThresholdPx = remember(density) { with(density) { 48.dp.toPx() } }
                     var topOverscrollPx by remember { mutableFloatStateOf(0f) }
                     var bottomOverscrollPx by remember { mutableFloatStateOf(0f) }
-                    val swipePaginationNestedScroll = remember {
+                    val swipePaginationNestedScroll = remember(overscrollThresholdPx) {
                         object : NestedScrollConnection {
                             override fun onPostScroll(
                                 consumed: Offset,
@@ -360,7 +376,7 @@ fun RouteResultsScreen(
                                         available.y > 0f && latestCanLoadEarlier -> {
                                             bottomOverscrollPx = 0f
                                             topOverscrollPx += available.y
-                                            if (topOverscrollPx >= 90f) {
+                                            if (topOverscrollPx >= overscrollThresholdPx) {
                                                 topOverscrollPx = 0f
                                                 viewModel.loadEarlierJourneys()
                                             }
@@ -368,7 +384,7 @@ fun RouteResultsScreen(
                                         available.y < 0f && latestCanLoadLater -> {
                                             topOverscrollPx = 0f
                                             bottomOverscrollPx += -available.y
-                                            if (bottomOverscrollPx >= 90f) {
+                                            if (bottomOverscrollPx >= overscrollThresholdPx) {
                                                 bottomOverscrollPx = 0f
                                                 viewModel.loadLaterJourneys()
                                             }
@@ -404,9 +420,10 @@ fun RouteResultsScreen(
                                         text = s.noEarlierRoutes,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 2.dp)
+                                            .padding(vertical = 4.dp)
                                     )
                                 } else {
                                     OutlinedButton(
@@ -414,13 +431,15 @@ fun RouteResultsScreen(
                                         enabled = !state.isLoadingEarlier,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(38.dp),
+                                            .defaultMinSize(minHeight = 40.dp),
                                         shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                     ) {
                                         Text(
                                             text = if (state.isLoadingEarlier) s.loadingEarlier else s.loadEarlierDeparted,
-                                            style = MaterialTheme.typography.labelMedium
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
@@ -451,7 +470,7 @@ fun RouteResultsScreen(
                                             else -> ""
                                         }
                                         val formatted = date.format(
-                                            DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault())
+                                            DateTimeFormatter.ofPattern("EEE d MMM", Locale.forLanguageTag(s.localeTag))
                                         )
                                         Row(
                                             modifier = Modifier
@@ -495,9 +514,10 @@ fun RouteResultsScreen(
                                         text = s.noLaterRoutes,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 2.dp)
+                                            .padding(vertical = 4.dp)
                                     )
                                 } else {
                                     OutlinedButton(
@@ -505,13 +525,15 @@ fun RouteResultsScreen(
                                         enabled = !state.isLoadingLater,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(38.dp),
+                                            .defaultMinSize(minHeight = 40.dp),
                                         shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                     ) {
                                         Text(
                                             text = if (state.isLoadingLater) s.loadingLater else s.loadLaterRoutes,
-                                            style = MaterialTheme.typography.labelMedium
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
@@ -539,11 +561,11 @@ private fun MinimalJourneyCard(
     val deltaSec = busDepSec - referenceNowSec
     val deltaMins = if (isDeparted) ((-deltaSec) + 30) / 60 else deltaSec / 60
     val isOverHour = deltaMins > 60
-    val hasRealtime = journey.transitLegs.any { leg ->
+    val hasRealtime = !journey.isFutureDay && journey.transitLegs.any { leg ->
         val core = leg.tripId.substringAfter('_', "")
         leg.tripId in liveTripDelays || (core.isNotEmpty() && core in liveTripDelays) || leg.delaySeconds != 0
     }
-    val isDelayed = journey.transitLegs.any { leg ->
+    val isDelayed = !journey.isFutureDay && journey.transitLegs.any { leg ->
         val core = leg.tripId.substringAfter('_', "")
         val d = liveTripDelays[leg.tripId]
             ?: (if (core.isNotEmpty()) liveTripDelays[core] else null)
@@ -575,10 +597,10 @@ private fun MinimalJourneyCard(
     }
 
     Surface(
+        onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .alpha(if (isDeparted) 0.58f else 1f)
-            .clickable(onClick = onClick),
+            .alpha(if (isDeparted) 0.58f else 1f),
         shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -586,23 +608,23 @@ private fun MinimalJourneyCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 13.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Левая колонка: крупное время (28sp) и аккуратная подпись + значок реального времени
+            // Левая колонка: крупные цифры и подпись «мин» ровно по нижней базовой линии цифр
             Column(
-                modifier = Modifier.width(92.dp),
+                modifier = Modifier.widthIn(min = 90.dp, max = 114.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         text = if (isDeparted) s.departedLabel else if (isOverHour) s.onSchedule else s.departingCaption,
-                        fontSize = 11.sp,
-                        lineHeight = 13.sp,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -613,112 +635,171 @@ private fun MinimalJourneyCard(
                     }
                 }
                 Row(
-                    verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     if (isOverHour) {
                         Text(
                             text = TimeFormatUtils.formatClock(busDepSec),
-                            fontSize = 28.sp,
-                            lineHeight = 30.sp,
+                            fontSize = 27.sp,
+                            lineHeight = 29.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1
+                            maxLines = 1,
+                            softWrap = false
                         )
                     } else if (!isDeparted && deltaMins == 0) {
                         Text(
                             text = "<1",
-                            fontSize = 32.sp,
+                            fontSize = 34.sp,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = 34.sp,
-                            color = departingNowColor
+                            lineHeight = 36.sp,
+                            color = departingNowColor,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.alignByBaseline()
                         )
                         Text(
                             text = s.minShort,
-                            fontSize = 13.sp,
+                            fontSize = 12.5.sp,
+                            lineHeight = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 3.dp)
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.alignByBaseline()
                         )
                     } else {
                         Text(
                             text = if (isDeparted) "-${deltaMins.coerceAtLeast(1)}" else "$deltaMins",
-                            fontSize = 32.sp,
+                            fontSize = if (isDeparted) 31.sp else 34.sp,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = 34.sp,
-                            color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface
+                            lineHeight = 36.sp,
+                            color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.alignByBaseline()
                         )
                         Text(
                             text = s.minShort,
-                            fontSize = 13.sp,
+                            fontSize = 12.5.sp,
+                            lineHeight = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 3.dp)
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.alignByBaseline()
                         )
                     }
                 }
             }
 
-            // Центральная колонка: одна ровная строка линий (даже при 2 пересадках!) + компактные капсулы времени
+            // Правая область:
+            // 1-я строка: бейджи линий (FlowRow — не обрезаются при 3+ пересадках) + общее время справа
+            // 2-я строка: 🚶 X мин (отпр) длит (приб) слева + цена справа (без выталкивания цены)
             val isCompactLegs = journey.transitLegs.size >= 3
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(if (isCompactLegs) 4.dp else 6.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    journey.transitLegs.forEach { leg ->
-                        MinimalLineChip(
-                            shortName = leg.routeShortName,
-                            isTram = leg.isTram,
-                            compact = isCompactLegs,
-                            showIcon = journey.transitLegs.size <= 3
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.weight(1f, fill = false)
+                    ) {
+                        journey.transitLegs.forEach { leg ->
+                            MinimalLineChip(
+                                shortName = leg.routeShortName,
+                                isTram = leg.isTram,
+                                isRail = leg.isRail,
+                                compact = isCompactLegs,
+                                showIcon = leg.isRail
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = TimeFormatUtils.formatDuration(journey.totalDurationMinutes, s),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                val firstWalkLeg = journey.legs.firstOrNull() as? JourneyLeg.WalkLeg
+                val initialWalkMins = if (firstWalkLeg != null && firstWalkLeg.distanceMeters > 15) {
+                    ((firstWalkLeg.durationSec + 30) / 60).coerceAtLeast(1)
+                } else {
+                    0
+                }
+                val transitDurationMins = ((journey.arrivalTimeSec - busDepSec + 30) / 60).coerceAtLeast(1)
+                val compactTransitDur = if (transitDurationMins >= 60) {
+                    val h = transitDurationMins / 60
+                    val m = transitDurationMins % 60
+                    if (m == 0) "$h${s.hourShort}" else "$h${s.hourShort} $m${s.minShort.take(1)}"
+                } else {
+                    "$transitDurationMins ${s.minShort}"
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        if (initialWalkMins > 0) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.DirectionsWalk,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = "$initialWalkMins ${s.minShort}",
+                                fontSize = 10.sp,
+                                lineHeight = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        TimePill(
+                            text = TimeFormatUtils.formatClock(busDepSec),
+                            bgColor = DeparturePillGreen
+                        )
+                        Text(
+                            text = compactTransitDur,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        TimePill(
+                            text = TimeFormatUtils.formatClock(journey.arrivalTimeSec),
+                            bgColor = ArrivalPillBlue
                         )
                     }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    TimePill(
-                        text = TimeFormatUtils.formatClock(busDepSec),
-                        bgColor = DeparturePillGreen
-                    )
-                    Text(
-                        text = "${journey.totalDurationMinutes} ${s.minShort}",
-                        fontSize = 11.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                    )
-                    TimePill(
-                        text = TimeFormatUtils.formatClock(journey.arrivalTimeSec),
-                        bgColor = ArrivalPillBlue
-                    )
-                }
-            }
-
-            // Правая колонка: общая длительность и минимальная цена билета
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = "${journey.totalDurationMinutes} ${s.minShort}",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-                if (!ticket.hasNonZtmPksLeg) {
-                    Text(
-                        text = ZtmTicketCalculator.formatPln(bestPricePln),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1
-                    )
+                    if (!ticket.hasNonZtmPksLeg && !ticket.hasRailLeg) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = ZtmTicketCalculator.formatPln(bestPricePln),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 }
             }
         }
@@ -729,28 +810,46 @@ private fun MinimalJourneyCard(
 private fun MinimalLineChip(
     shortName: String,
     isTram: Boolean,
+    isRail: Boolean = false,
     compact: Boolean = false,
     showIcon: Boolean = true
 ) {
     val isNightLine = TransportMode.isNightLine(shortName)
+    val railAccent = Color(0xFFD32F2F)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)
     ) {
         if (showIcon) {
             Icon(
-                imageVector = if (isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
+                imageVector = when {
+                    isRail -> Icons.Default.Train
+                    isTram -> Icons.Default.Tram
+                    else -> Icons.Default.DirectionsBus
+                },
                 contentDescription = null,
-                tint = if (isNightLine) NightBusWhite else MaterialTheme.colorScheme.onSurface,
+                tint = when {
+                    isRail -> railAccent
+                    isNightLine -> NightBusWhite
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
                 modifier = Modifier.size(if (compact) 14.dp else 16.dp)
             )
         }
         Surface(
             shape = RoundedCornerShape(6.dp),
-            color = if (isNightLine) NightBusWhite else Color.Transparent,
+            color = when {
+                isRail -> railAccent.copy(alpha = 0.14f)
+                isNightLine -> NightBusWhite
+                else -> Color.Transparent
+            },
             border = BorderStroke(
                 width = 1.dp,
-                color = if (isNightLine) NightBusWhite else MaterialTheme.colorScheme.outline
+                color = when {
+                    isRail -> railAccent
+                    isNightLine -> NightBusWhite
+                    else -> MaterialTheme.colorScheme.outline
+                }
             )
         ) {
             Text(
@@ -780,12 +879,13 @@ private fun TimePill(
     ) {
         Text(
             text = text,
-            fontSize = 11.5.sp,
-            lineHeight = 14.sp,
+            fontSize = 10.5.sp,
+            lineHeight = 13.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White,
             maxLines = 1,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+            softWrap = false,
+            modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp)
         )
     }
 }

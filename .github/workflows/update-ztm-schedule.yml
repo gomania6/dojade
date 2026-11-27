@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Download ZTM GTFS and build compact SQLite DB
+      - name: Download ZTM + KW/Polregio Rail GTFS and build compact SQLite DB
         run: python scripts/build_gtfs_db.py --output-dir dist
 
       - name: Publish poznan_schedule.db.gz and version.json to GitHub Releases

@@ -18,6 +18,11 @@ data class AppStrings(
     val timetables: String,
     val syncAndMap: String,
     val minShort: String,
+    val hourShort: String,
+    val localeTag: String,
+    val saveLabel: String,
+    val cancelLabel: String,
+    val resetLabel: String,
     val metersShort: String,
     val stopsShort: String,
     val platformsShort: String,
@@ -74,6 +79,7 @@ data class AppStrings(
     val noEarlierRoutes: String,
     val noLaterRoutes: String,
     val noRoutesFound: String,
+    val tooCloseWalkHint: (Int, Int) -> String,
     val scheduleNotLoadedError: String,
     val directTrip: String,
     val transfersCount: (Int) -> String,
@@ -116,6 +122,15 @@ data class AppStrings(
     val retryDownload: String,
     val startTrips: String,
     val goToHome: String,
+    val gtfsStageWaiting: String,
+    val gtfsStageAlreadyLoaded: String,
+    val gtfsStageCheckingGithub: String,
+    val gtfsStageDownloadingDirect: String,
+    val gtfsStageFallbackDirect: String,
+    val gtfsStageBuildingGraph: String,
+    val gtfsStageReadyOffline: String,
+    val mapDownloadFailed: String,
+    val gtfsDownloadFailed: String,
 
     // Settings Screen
     val settingsTitle: String,
@@ -228,7 +243,18 @@ data class AppStrings(
     val vehicleEarlyBy: (Int) -> String,
     val vehicleOnSchedule: String,
     val ticket24hLabel: String,
-    val tightFitWarningText: (Int, Int, Int, Int, String, String, String) -> String
+    val tightFitWarningText: (Int, Int, Int, Int, String, String, String) -> String,
+
+    // Rail & Live Map
+    val filterRail: String,
+    val railTicketNotice: String,
+    val navMap: String,
+    val liveMapSearchHint: String,
+    val liveMapHeadingTo: (String) -> String,
+    val liveMapCurrentStop: (String) -> String,
+    val liveMapActiveVehicles: (Int) -> String,
+    val liveMapNoVehicles: String,
+    val liveMapTapVehicleHint: String
 ) {
     fun ticketDurationLabel(ticketId: String, maxMinutes: Int): String = when (ticketId) {
         "t24h" -> ticket24hLabel
@@ -284,6 +310,11 @@ private val RussianStrings = AppStrings(
     timetables = "Расписания",
     syncAndMap = "Синхронизация и карта",
     minShort = "мин",
+    hourShort = "ч",
+    localeTag = "ru",
+    saveLabel = "Сохранить",
+    cancelLabel = "Отменить",
+    resetLabel = "Сбросить",
     metersShort = "м",
     stopsShort = "ост.",
     platformsShort = "платф.",
@@ -337,9 +368,17 @@ private val RussianStrings = AppStrings(
     noEarlierRoutes = "Более ранних рейсов не найдено",
     noLaterRoutes = "Более поздних рейсов не найдено",
     noRoutesFound = "Маршруты не найдены. Попробуйте изменить фильтры поездки.",
+    tooCloseWalkHint = { m, min -> "Пункт назначения совсем рядом (~$m м) — быстрее дойти пешком (~$min мин)." },
     scheduleNotLoadedError = "Расписание ZTM не загружено. Выполните синхронизацию.",
     directTrip = "Прямой рейс",
-    transfersCount = { n -> if (n == 1) "1 пересадка" else "$n пересадки" },
+    transfersCount = { n ->
+        when {
+            n % 100 in 11..14 -> "$n пересадок"
+            n % 10 == 1 -> "$n пересадка"
+            n % 10 in 2..4 -> "$n пересадки"
+            else -> "$n пересадок"
+        }
+    },
     directAlternativeTag = "Прямой",
     tramAlternativeTag = "Трамвай",
     busAlternativeTag = "Автобус",
@@ -366,7 +405,7 @@ private val RussianStrings = AppStrings(
     offlineMapTitle = "Офлайн-карта Познани (.pmtiles)",
     mapSaved = "Карта сохранена на устройстве",
     mapSkipped = "Пропущено — карта будет работать в базовом режиме",
-    mapSourceHint = "Источник: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)",
+    mapSourceHint = "Источник: GitHub Releases (офлайн-карта Познани)",
     skipForNow = "Пропустить пока",
     retry = "Повторить",
     downloadMap = "Скачать карту",
@@ -376,6 +415,15 @@ private val RussianStrings = AppStrings(
     retryDownload = "Повторить загрузку",
     startTrips = "Начать поездки",
     goToHome = "Перейти на главный экран",
+    gtfsStageWaiting = "Ожидание загрузки расписания ZTM Poznań",
+    gtfsStageAlreadyLoaded = "Расписание ZTM уже загружено",
+    gtfsStageCheckingGithub = "Проверка готовой базы на GitHub Releases…",
+    gtfsStageDownloadingDirect = "Загрузка GTFS ZTM Poznań…",
+    gtfsStageFallbackDirect = "GitHub недоступен — загрузка напрямую с ZTM Poznań…",
+    gtfsStageBuildingGraph = "Построение быстрого графа RAPTOR…",
+    gtfsStageReadyOffline = "Готово к работе офлайн!",
+    mapDownloadFailed = "Не удалось скачать poznan.pmtiles",
+    gtfsDownloadFailed = "Ошибка загрузки расписания ZTM",
 
     settingsTitle = "Настройки",
     appearanceSection = "Приложение",
@@ -485,7 +533,16 @@ private val RussianStrings = AppStrings(
     tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
         val dPart = if (delay > 0) "опоздания +$delay мин и " else ""
         "Чистое время $pure мин, но с учётом ${dPart}буфера +$buf мин ($total мин) билет на $pureLbl впритык — рекомендуем $recLbl ($price)"
-    }
+    },
+    filterRail = "Поезда",
+    railTicketNotice = "Маршрут включает электричку (Koleje Wielkopolskie / Polregio). Разовые билеты ZTM в поездах не действуют — нужен билет перевозчика либо проездной ZTM (зона A) / Bus-Tramwaj-Kolej.",
+    navMap = "Карта",
+    liveMapSearchHint = "Линия (напр. 163, 12)…",
+    liveMapHeadingTo = { "Направление: $it" },
+    liveMapCurrentStop = { "Остановка: $it" },
+    liveMapActiveVehicles = { "На линии: $it" },
+    liveMapNoVehicles = "Нет живых данных транспорта. Проверьте подключение к интернету.",
+    liveMapTapVehicleHint = "Нажмите на автобус или трамвай, чтобы увидеть маршрут и направление"
 )
 
 private val UkrainianStrings = AppStrings(
@@ -499,6 +556,11 @@ private val UkrainianStrings = AppStrings(
     timetables = "Розклади",
     syncAndMap = "Синхронізація та карта",
     minShort = "хв",
+    hourShort = "год",
+    localeTag = "uk",
+    saveLabel = "Зберегти",
+    cancelLabel = "Скасувати",
+    resetLabel = "Скинути",
     metersShort = "м",
     stopsShort = "зуп.",
     platformsShort = "платф.",
@@ -552,9 +614,17 @@ private val UkrainianStrings = AppStrings(
     noEarlierRoutes = "Раніших рейсів не знайдено",
     noLaterRoutes = "Пізніших рейсів не знайдено",
     noRoutesFound = "Маршрутів не знайдено. Спробуйте змінити фільтри поїздки.",
+    tooCloseWalkHint = { m, min -> "Пункт призначення поруч (~$m м) — швидше дійти пішки (~$min хв)." },
     scheduleNotLoadedError = "Розклад ZTM не завантажено. Виконайте синхронізацію.",
     directTrip = "Прямий рейс",
-    transfersCount = { n -> if (n == 1) "1 пересадка" else "$n пересадки" },
+    transfersCount = { n ->
+        when {
+            n % 100 in 11..14 -> "$n пересадок"
+            n % 10 == 1 -> "$n пересадка"
+            n % 10 in 2..4 -> "$n пересадки"
+            else -> "$n пересадок"
+        }
+    },
     directAlternativeTag = "Прямий",
     tramAlternativeTag = "Трамвай",
     busAlternativeTag = "Автобус",
@@ -581,7 +651,7 @@ private val UkrainianStrings = AppStrings(
     offlineMapTitle = "Офлайн-карта Познані (.pmtiles)",
     mapSaved = "Карту збережено на пристрої",
     mapSkipped = "Пропущено — карта працюватиме в базовому режимі",
-    mapSourceHint = "Джерело: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)",
+    mapSourceHint = "Джерело: GitHub Releases (офлайн-мапа Познані)",
     skipForNow = "Пропустити поки",
     retry = "Повторити",
     downloadMap = "Завантажити карту",
@@ -591,6 +661,15 @@ private val UkrainianStrings = AppStrings(
     retryDownload = "Повторити завантаження",
     startTrips = "Почати поїздки",
     goToHome = "На головний екран",
+    gtfsStageWaiting = "Очікування завантаження розкладу ZTM Poznań",
+    gtfsStageAlreadyLoaded = "Розклад ZTM вже завантажено",
+    gtfsStageCheckingGithub = "Перевірка готової бази на GitHub Releases…",
+    gtfsStageDownloadingDirect = "Завантаження GTFS ZTM Poznań…",
+    gtfsStageFallbackDirect = "GitHub недоступний — завантаження напряму з ZTM Poznań…",
+    gtfsStageBuildingGraph = "Побудова швидкого графа RAPTOR…",
+    gtfsStageReadyOffline = "Готово до роботи офлайн!",
+    mapDownloadFailed = "Не вдалося завантажити poznan.pmtiles",
+    gtfsDownloadFailed = "Помилка завантаження розкладу ZTM",
 
     settingsTitle = "Налаштування",
     appearanceSection = "Додаток",
@@ -700,7 +779,16 @@ private val UkrainianStrings = AppStrings(
     tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
         val dPart = if (delay > 0) "запізнення +$delay хв і " else ""
         "Чистий час $pure хв, але з урахуванням ${dPart}запасу +$buf хв ($total хв) квиток на $pureLbl впритул — рекомендуємо $recLbl ($price)"
-    }
+    },
+    filterRail = "Поїзди",
+    railTicketNotice = "Маршрут включає електричку (Koleje Wielkopolskie / Polregio). Разові квитки ZTM у поїздах не діють — потрібен квиток перевізника або проїзний ZTM (зона A) / Bus-Tramwaj-Kolej.",
+    navMap = "Карта",
+    liveMapSearchHint = "Лінія (напр. 163, 12)…",
+    liveMapHeadingTo = { "Напрямок: $it" },
+    liveMapCurrentStop = { "Зупинка: $it" },
+    liveMapActiveVehicles = { "На лінії: $it" },
+    liveMapNoVehicles = "Немає живих даних транспорту. Перевірте підключення до інтернету.",
+    liveMapTapVehicleHint = "Натисніть на автобус або трамвай, щоб побачити маршрут і напрямок"
 )
 
 private val PolishStrings = AppStrings(
@@ -714,6 +802,11 @@ private val PolishStrings = AppStrings(
     timetables = "Rozkłady",
     syncAndMap = "Synchronizacja i mapa",
     minShort = "min",
+    hourShort = "h",
+    localeTag = "pl",
+    saveLabel = "Zapisz",
+    cancelLabel = "Anuluj",
+    resetLabel = "Resetuj",
     metersShort = "m",
     stopsShort = "przyst.",
     platformsShort = "per.",
@@ -767,9 +860,17 @@ private val PolishStrings = AppStrings(
     noEarlierRoutes = "Nie znaleziono wcześniejszych połączeń",
     noLaterRoutes = "Nie znaleziono późniejszych połączeń",
     noRoutesFound = "Nie znaleziono połączeń. Spróbuj zmienić ustawienia podróży.",
+    tooCloseWalkHint = { m, min -> "Cel jest bardzo blisko (~$m m) — szybciej dojdziesz pieszo (~$min min)." },
     scheduleNotLoadedError = "Brak rozkładu ZTM. Wykonaj synchronizację.",
     directTrip = "Bezpośrednie",
-    transfersCount = { n -> if (n == 1) "1 przesiadka" else "$n przesiadki" },
+    transfersCount = { n ->
+        when {
+            n == 1 -> "1 przesiadka"
+            n % 100 in 12..14 -> "$n przesiadek"
+            n % 10 in 2..4 -> "$n przesiadki"
+            else -> "$n przesiadek"
+        }
+    },
     directAlternativeTag = "Bezpośredni",
     tramAlternativeTag = "Tramwaj",
     busAlternativeTag = "Autobus",
@@ -796,7 +897,7 @@ private val PolishStrings = AppStrings(
     offlineMapTitle = "Mapa offline Poznania (.pmtiles)",
     mapSaved = "Mapa zapisana na urządzeniu",
     mapSkipped = "Pominięto — mapa będzie działać w trybie bazowym",
-    mapSourceHint = "Źródło: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)",
+    mapSourceHint = "Źródło: GitHub Releases (mapa offline Poznania)",
     skipForNow = "Pomiń na razie",
     retry = "Ponów",
     downloadMap = "Pobierz mapę",
@@ -806,6 +907,15 @@ private val PolishStrings = AppStrings(
     retryDownload = "Ponów pobieranie",
     startTrips = "Rozpocznij podróże",
     goToHome = "Przejdź do ekranu głównego",
+    gtfsStageWaiting = "Oczekiwanie na pobranie rozkładu ZTM Poznań",
+    gtfsStageAlreadyLoaded = "Rozkład ZTM jest już pobrany",
+    gtfsStageCheckingGithub = "Sprawdzanie gotowej bazy na GitHub Releases…",
+    gtfsStageDownloadingDirect = "Pobieranie GTFS ZTM Poznań…",
+    gtfsStageFallbackDirect = "GitHub niedostępny — pobieranie bezpośrednio z ZTM Poznań…",
+    gtfsStageBuildingGraph = "Budowanie szybkiego grafu RAPTOR…",
+    gtfsStageReadyOffline = "Gotowe do pracy offline!",
+    mapDownloadFailed = "Nie udało się pobrać poznan.pmtiles",
+    gtfsDownloadFailed = "Błąd pobierania rozkładu ZTM",
 
     settingsTitle = "Ustawienia",
     appearanceSection = "Aplikacja",
@@ -915,7 +1025,16 @@ private val PolishStrings = AppStrings(
     tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
         val dPart = if (delay > 0) "opóźnienia +$delay min i " else ""
         "Czas jazdy $pure min, ale z uwzględnieniem ${dPart}bufora +$buf min ($total min) bilet $pureLbl jest na styk — polecamy $recLbl ($price)"
-    }
+    },
+    filterRail = "Pociągi",
+    railTicketNotice = "Trasa obejmuje pociąg (Koleje Wielkopolskie / Polregio). Jednorazowe bilety ZTM nie obowiązują w pociągach — wymagany jest bilet kolejowy lub bilet okresowy ZTM (strefa A) / Bus-Tramwaj-Kolej.",
+    navMap = "Mapa",
+    liveMapSearchHint = "Linia (np. 163, 12)…",
+    liveMapHeadingTo = { "Kierunek: $it" },
+    liveMapCurrentStop = { "Przystanek: $it" },
+    liveMapActiveVehicles = { "Na trasie: $it" },
+    liveMapNoVehicles = "Brak danych na żywo. Sprawdź połączenie z internetem.",
+    liveMapTapVehicleHint = "Dotknij autobus lub tramwaj, aby zobaczyć trasę i kierunek"
 )
 
 private val EnglishStrings = AppStrings(
@@ -929,6 +1048,11 @@ private val EnglishStrings = AppStrings(
     timetables = "Timetables",
     syncAndMap = "Sync & Map",
     minShort = "min",
+    hourShort = "h",
+    localeTag = "en",
+    saveLabel = "Save",
+    cancelLabel = "Cancel",
+    resetLabel = "Reset",
     metersShort = "m",
     stopsShort = "stops",
     platformsShort = "plat.",
@@ -982,6 +1106,7 @@ private val EnglishStrings = AppStrings(
     noEarlierRoutes = "No earlier departures found",
     noLaterRoutes = "No later departures found",
     noRoutesFound = "No routes found. Try adjusting your trip filters.",
+    tooCloseWalkHint = { m, min -> "Destination is nearby (~$m m) — it's faster to walk (~$min min)." },
     scheduleNotLoadedError = "ZTM schedule is not loaded. Please sync first.",
     directTrip = "Direct",
     transfersCount = { n -> if (n == 1) "1 transfer" else "$n transfers" },
@@ -1011,7 +1136,7 @@ private val EnglishStrings = AppStrings(
     offlineMapTitle = "Poznań Offline Map (.pmtiles)",
     mapSaved = "Map saved on device",
     mapSkipped = "Skipped — map will run in basic mode",
-    mapSourceHint = "Source: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)",
+    mapSourceHint = "Source: GitHub Releases (Poznań offline map)",
     skipForNow = "Skip for now",
     retry = "Retry",
     downloadMap = "Download map",
@@ -1021,6 +1146,15 @@ private val EnglishStrings = AppStrings(
     retryDownload = "Retry download",
     startTrips = "Start navigating",
     goToHome = "Go to home",
+    gtfsStageWaiting = "Waiting to download ZTM Poznań schedule",
+    gtfsStageAlreadyLoaded = "ZTM schedule is already loaded",
+    gtfsStageCheckingGithub = "Checking prebuilt schedule on GitHub Releases…",
+    gtfsStageDownloadingDirect = "Downloading ZTM Poznań GTFS…",
+    gtfsStageFallbackDirect = "GitHub unavailable — downloading directly from ZTM Poznań…",
+    gtfsStageBuildingGraph = "Building fast RAPTOR graph…",
+    gtfsStageReadyOffline = "Ready for offline use!",
+    mapDownloadFailed = "Failed to download poznan.pmtiles",
+    gtfsDownloadFailed = "Failed to download ZTM schedule",
 
     settingsTitle = "Settings",
     appearanceSection = "App",
@@ -1130,7 +1264,16 @@ private val EnglishStrings = AppStrings(
     tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
         val dPart = if (delay > 0) "+$delay min delay and " else ""
         "Pure ride is $pure min, but with ${dPart}+$buf min buffer ($total min) a $pureLbl ticket is tight — we recommend $recLbl ($price)"
-    }
+    },
+    filterRail = "Trains",
+    railTicketNotice = "This trip includes a regional train (Koleje Wielkopolskie / Polregio). Single ZTM tickets are not valid on trains — use a rail ticket or a ZTM Zone A period pass / Bus-Tramwaj-Kolej.",
+    navMap = "Map",
+    liveMapSearchHint = "Line (e.g. 163, 12)…",
+    liveMapHeadingTo = { "Heading to: $it" },
+    liveMapCurrentStop = { "Stop: $it" },
+    liveMapActiveVehicles = { "Active: $it" },
+    liveMapNoVehicles = "No live vehicle data. Check your internet connection.",
+    liveMapTapVehicleHint = "Tap a bus or tram to see its route line and destination"
 )
 
 private val GermanStrings = AppStrings(
@@ -1144,6 +1287,11 @@ private val GermanStrings = AppStrings(
     timetables = "Fahrpläne",
     syncAndMap = "Sync & Karte",
     minShort = "Min.",
+    hourShort = "Std",
+    localeTag = "de",
+    saveLabel = "Speichern",
+    cancelLabel = "Abbrechen",
+    resetLabel = "Zurücksetzen",
     metersShort = "m",
     stopsShort = "Hst.",
     platformsShort = "Steige",
@@ -1197,6 +1345,7 @@ private val GermanStrings = AppStrings(
     noEarlierRoutes = "Keine früheren Verbindungen gefunden",
     noLaterRoutes = "Keine späteren Verbindungen gefunden",
     noRoutesFound = "Keine Routen gefunden. Passe ggf. die Fahrtoptionen an.",
+    tooCloseWalkHint = { m, min -> "Ziel ist ganz nah (~$m m) — schneller zu Fuß (~$min Min.)." },
     scheduleNotLoadedError = "ZTM-Fahrplan nicht geladen. Bitte synchronisieren.",
     directTrip = "Direktverbindung",
     transfersCount = { n -> if (n == 1) "1 Umstieg" else "$n Umstiege" },
@@ -1226,7 +1375,7 @@ private val GermanStrings = AppStrings(
     offlineMapTitle = "Offline-Karte Posen (.pmtiles)",
     mapSaved = "Karte auf dem Gerät gespeichert",
     mapSkipped = "Übersprungen — Karte läuft im Basismodus",
-    mapSourceHint = "Quelle: GitHub Releases (AppConfig.MAP_DOWNLOAD_URL)",
+    mapSourceHint = "Quelle: GitHub Releases (Offline-Karte Posen)",
     skipForNow = "Vorerst überspringen",
     retry = "Erneut versuchen",
     downloadMap = "Karte herunterladen",
@@ -1236,6 +1385,15 @@ private val GermanStrings = AppStrings(
     retryDownload = "Erneut laden",
     startTrips = "Loslegen",
     goToHome = "Zum Startbildschirm",
+    gtfsStageWaiting = "Warte auf Download des ZTM-Fahrplans",
+    gtfsStageAlreadyLoaded = "ZTM-Fahrplan ist bereits geladen",
+    gtfsStageCheckingGithub = "Prüfe fertige Datenbank auf GitHub Releases…",
+    gtfsStageDownloadingDirect = "Lade ZTM Poznań GTFS herunter…",
+    gtfsStageFallbackDirect = "GitHub nicht erreichbar — lade direkt von ZTM Poznań…",
+    gtfsStageBuildingGraph = "Erstelle schnellen RAPTOR-Graphen…",
+    gtfsStageReadyOffline = "Bereit für Offline-Nutzung!",
+    mapDownloadFailed = "Download von poznan.pmtiles fehlgeschlagen",
+    gtfsDownloadFailed = "Fehler beim Laden des ZTM-Fahrplans",
 
     settingsTitle = "Einstellungen",
     appearanceSection = "App",
@@ -1345,5 +1503,14 @@ private val GermanStrings = AppStrings(
     tightFitWarningText = { pure, delay, buf, total, pureLbl, recLbl, price ->
         val dPart = if (delay > 0) "+$delay Min. Verspätung und " else ""
         "Reine Fahrzeit $pure Min., mit ${dPart}+$buf Min. Puffer ($total Min.) wird ein $pureLbl-Ticket knapp — empfohlen: $recLbl ($price)"
-    }
+    },
+    filterRail = "Züge",
+    railTicketNotice = "Die Route enthält einen Regionalzug (Koleje Wielkopolskie / Polregio). Einzel-ZTM-Tickets gelten nicht im Zug — erforderlich ist ein Bahnticket oder ein ZTM-Zeitticket (Zone A) / Bus-Tramwaj-Kolej.",
+    navMap = "Karte",
+    liveMapSearchHint = "Linie (z. B. 163, 12)…",
+    liveMapHeadingTo = { "Richtung: $it" },
+    liveMapCurrentStop = { "Haltestelle: $it" },
+    liveMapActiveVehicles = { "Aktiv: $it" },
+    liveMapNoVehicles = "Keine Live-Fahrzeugdaten. Prüfe die Internetverbindung.",
+    liveMapTapVehicleHint = "Tippe auf Bus oder Bahn, um Linie und Ziel zu sehen"
 )

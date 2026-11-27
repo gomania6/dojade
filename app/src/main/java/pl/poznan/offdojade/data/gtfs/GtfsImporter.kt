@@ -21,6 +21,8 @@ import pl.poznan.offdojade.data.local.entity.TransferEntity
 import pl.poznan.offdojade.data.local.entity.TripEntity
 import java.io.BufferedInputStream
 import java.io.BufferedReader
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -93,18 +95,36 @@ class GtfsImporter(
             .build()
 
         val response = okHttpClient.newCall(request).execute()
-        response.use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("HTTP ${resp.code} при загрузке GTFS ZTM Poznań")
-            }
-            val body = resp.body ?: throw IOException("Пустой ответ от сервера ZTM")
-            val etag = resp.header("ETag")
-            val lastModified = resp.header("Last-Modified")
-            val archiveName = parseFileNameFromDisposition(resp.header("Content-Disposition"))
+        val tmpZip = databaseHolder.tempGtfsZipFile()
+        try {
+            val etag: String?
+            val lastModified: String?
+            val archiveName: String?
+            response.use { resp ->
+                if (!resp.isSuccessful) {
+                    throw IOException("HTTP ${resp.code} при загрузке GTFS ZTM Poznań")
+                }
+                val body = resp.body ?: throw IOException("Пустой ответ от сервера ZTM")
+                etag = resp.header("ETag")
+                lastModified = resp.header("Last-Modified")
+                archiveName = parseFileNameFromDisposition(resp.header("Content-Disposition"))
 
-            importFromZipStream(body.byteStream()) { stage, progress, rows ->
-                emit(GtfsImportProgress(stage = stage, progress = progress, rowsImported = rows))
+                // Сначала полностью скачиваем архив во временный файл, чтобы обрыв сети не стёр рабочую базу
+                emit(GtfsImportProgress("Скачивание архива GTFS…", 0.04f))
+                if (tmpZip.exists()) tmpZip.delete()
+                body.byteStream().use { input ->
+                    FileOutputStream(tmpZip).use { output ->
+                        input.copyTo(output, bufferSize = 64 * 1024)
+                    }
+                }
             }
+
+            FileInputStream(tmpZip).use { fis ->
+                importFromZipStream(fis) { stage, progress, rows ->
+                    emit(GtfsImportProgress(stage = stage, progress = progress, rowsImported = rows))
+                }
+            }
+            databaseHolder.clearGraphCaches()
 
             preferencesRepository.updateSyncMetadata(
                 etag = etag,
@@ -112,6 +132,8 @@ class GtfsImporter(
                 archiveName = archiveName
             )
             emit(GtfsImportProgress("Расписание ZTM обновлено", 1f, isFinished = true))
+        } finally {
+            runCatching { if (tmpZip.exists()) tmpZip.delete() }
         }
     }.flowOn(Dispatchers.IO)
 

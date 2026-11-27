@@ -78,6 +78,7 @@ object ZtmTicketCalculator {
         val hasPksLeg = transitLegs.any { leg ->
             leg.routeShortName.contains("PKS", ignoreCase = true)
         }
+        val hasRailLeg = transitLegs.any { it.isRail }
 
         return calculate(
             pureTransitMinutes = pureMinutes,
@@ -86,7 +87,8 @@ object ZtmTicketCalculator {
             zones = zones.ifEmpty { setOf("A") },
             isUlgowy = isUlgowy,
             pekaStopGroups = pekaStopGroups,
-            hasNonZtmPksLeg = hasPksLeg
+            hasNonZtmPksLeg = hasPksLeg,
+            hasRailLeg = hasRailLeg
         )
     }
 
@@ -97,7 +99,8 @@ object ZtmTicketCalculator {
         zones: Set<String>,
         isUlgowy: Boolean = false,
         pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList(),
-        hasNonZtmPksLeg: Boolean = false
+        hasNonZtmPksLeg: Boolean = false,
+        hasRailLeg: Boolean = false
     ): TicketRecommendation {
         val safePure = pureTransitMinutes.coerceAtLeast(0)
         val safeDelay = delayMinutes.coerceAtLeast(0)
@@ -151,7 +154,8 @@ object ZtmTicketCalculator {
             isUlgowy = isUlgowy,
             recommendedTimeTicketPricePln = recommendedPrice,
             pekaStopGroups = effectiveGroups,
-            hasNonZtmPksLeg = hasNonZtmPksLeg
+            hasNonZtmPksLeg = hasNonZtmPksLeg,
+            hasRailLeg = hasRailLeg
         )
     }
 

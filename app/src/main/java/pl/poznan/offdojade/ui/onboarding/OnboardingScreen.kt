@@ -2,9 +2,9 @@ package pl.poznan.offdojade.ui.onboarding
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.ui.res.painterResource
-import pl.poznan.offdojade.R
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,49 +16,131 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.koin.androidx.compose.koinViewModel
+import pl.poznan.offdojade.R
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.LiveGreen
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingScreen(
     onFinished: () -> Unit,
+    showBackButton: Boolean = false,
+    onBack: () -> Unit = {},
     viewModel: OnboardingViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val s = LocalStrings.current
 
-    Scaffold { padding ->
+    val resolvedGtfsStage = when (state.gtfsStageType) {
+        OnboardingGtfsStage.WAITING -> s.gtfsStageWaiting
+        OnboardingGtfsStage.ALREADY_LOADED -> s.gtfsStageAlreadyLoaded
+        OnboardingGtfsStage.CHECKING_GITHUB -> s.gtfsStageCheckingGithub
+        OnboardingGtfsStage.DOWNLOADING_DIRECT -> s.gtfsStageDownloadingDirect
+        OnboardingGtfsStage.FALLBACK_DIRECT -> s.gtfsStageFallbackDirect
+        OnboardingGtfsStage.BUILDING_GRAPH -> s.gtfsStageBuildingGraph
+        OnboardingGtfsStage.READY_OFFLINE -> s.gtfsStageReadyOffline
+        OnboardingGtfsStage.CUSTOM -> state.gtfsStageCustom.ifBlank { s.gtfsStageDownloadingDirect }
+    }
+    val resolvedMapError = when {
+        !state.mapError.isNullOrBlank() -> state.mapError
+        state.mapErrorIsDefault -> s.mapDownloadFailed
+        else -> null
+    }
+    val resolvedGtfsError = when {
+        !state.gtfsError.isNullOrBlank() -> state.gtfsError
+        state.gtfsErrorIsDefault -> s.gtfsDownloadFailed
+        else -> null
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            if (showBackButton) {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s.back)
+                        }
+                    },
+                    title = {
+                        Text(
+                            text = s.syncAndMap,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                )
+            }
+        },
+        bottomBar = {
+            Surface(color = MaterialTheme.colorScheme.background) {
+                Button(
+                    onClick = { viewModel.markOnboardingDone(onFinished) },
+                    enabled = state.canContinue || !state.gtfsSyncing,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text(
+                        text = if (showBackButton) {
+                            s.doneLabel
+                        } else if (state.gtfsReady) {
+                            s.startTrips
+                        } else {
+                            s.goToHome
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(Modifier.height(8.dp))
+            if (!showBackButton) {
+                Spacer(Modifier.height(4.dp))
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -70,9 +152,11 @@ fun OnboardingScreen(
                 )
                 Text(
                     text = "PyrTransit • ZTM Poznań",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             Text(
@@ -148,27 +232,32 @@ fun OnboardingScreen(
                         )
                     }
 
-                    if (state.mapError != null) {
+                    if (resolvedMapError != null) {
                         Text(
-                            text = state.mapError.orEmpty(),
+                            text = resolvedMapError,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        if (!state.mapDownloaded) {
+                    if (!state.mapDownloaded) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             TextButton(onClick = viewModel::skipMapForNow) {
-                                Text(s.skipForNow)
+                                Text(s.skipForNow, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             OutlinedButton(
                                 onClick = viewModel::startMapDownload,
                                 enabled = !state.mapDownloading
                             ) {
-                                Text(if (state.mapError != null) s.retry else s.downloadMap)
+                                Text(
+                                    text = if (resolvedMapError != null) s.retry else s.downloadMap,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -201,7 +290,7 @@ fun OnboardingScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = state.gtfsStage + if (state.gtfsRowsImported > 0) {
+                                text = resolvedGtfsStage + if (state.gtfsRowsImported > 0) {
                                     s.recordsSuffix(state.gtfsRowsImported)
                                 } else {
                                     ""
@@ -218,9 +307,9 @@ fun OnboardingScreen(
                         color = if (state.gtfsReady) LiveGreen else MaterialTheme.colorScheme.primary
                     )
 
-                    if (state.gtfsError != null) {
+                    if (resolvedGtfsError != null) {
                         Text(
-                            text = state.gtfsError.orEmpty(),
+                            text = resolvedGtfsError,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
@@ -234,27 +323,14 @@ fun OnboardingScreen(
                             onClick = viewModel::startGtfsSync,
                             enabled = !state.gtfsSyncing
                         ) {
-                            Text(if (state.gtfsReady) s.updateSchedule else s.retryDownload)
+                            Text(
+                                text = if (state.gtfsReady) s.updateSchedule else s.retryDownload,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
-            }
-
-            Spacer(Modifier.weight(1f))
-
-            Button(
-                onClick = { viewModel.markOnboardingDone(onFinished) },
-                enabled = state.canContinue || !state.gtfsSyncing,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(
-                    text = if (state.gtfsReady) s.startTrips else s.goToHome,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
             }
         }
     }

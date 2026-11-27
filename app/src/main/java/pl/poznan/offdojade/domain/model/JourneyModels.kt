@@ -39,7 +39,9 @@ data class TicketRecommendation(
     /** Группы остановок для PEKA tPortmonetka (разделяются, если пересадка > 20 мин) */
     val pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList(),
     /** true, если маршрут содержит линии PKS (тариф ZTM не применяется — цену скрываем) */
-    val hasNonZtmPksLeg: Boolean = false
+    val hasNonZtmPksLeg: Boolean = false,
+    /** true, если маршрут содержит пригородную электричку (Koleje Wielkopolskie / Polregio) */
+    val hasRailLeg: Boolean = false
 ) {
     val zonesBadgeText: String
         get() = if (zones.isEmpty()) "Зона: A" else "Зоны: ${zones.joinToString(" + ")}"
@@ -91,7 +93,8 @@ sealed interface JourneyLeg {
         /** GTFS wheelchair_accessible: 1 = low-floor */
         val wheelchairAccessible: Int = 0
     ) : JourneyLeg {
-        val isTram: Boolean get() = routeType == 0
+        val isTram: Boolean get() = routeType == 0 || routeType == 900
+        val isRail: Boolean get() = routeType == 2 || routeType == 100 || routeType == 109
         val isLowFloor: Boolean get() = wheelchairAccessible == 1
         /** Количество проезжаемых остановок (интервалов между посадкой и высадкой) */
         val stopsPassed: Int get() = (stops.size - 1).coerceAtLeast(0)
@@ -133,6 +136,10 @@ data class TransitJourney(
 
     val totalWalkMeters: Int
         get() = legs.filterIsInstance<JourneyLeg.WalkLeg>().sumOf { it.distanceMeters }
+
+    /** true, если маршрут запланирован на будущий день (сдвинут через `d1_`, `d2_` и т.д.) */
+    val isFutureDay: Boolean
+        get() = id.startsWith("d") && id.indexOf('_') > 1
 }
 
 data class UpcomingDeparture(

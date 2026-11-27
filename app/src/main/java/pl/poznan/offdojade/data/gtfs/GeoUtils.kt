@@ -21,7 +21,7 @@ object GeoUtils {
 
         val sinDLat = sin(dLat / 2.0)
         val sinDLon = sin(dLon / 2.0)
-        val a = sinDLat * sinDLat + cos(radLat1) * cos(radLat2) * sinDLon * sinDLon
+        val a = (sinDLat * sinDLat + cos(radLat1) * cos(radLat2) * sinDLon * sinDLon).coerceIn(0.0, 1.0)
         val c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
         return EARTH_RADIUS_METERS * c
     }

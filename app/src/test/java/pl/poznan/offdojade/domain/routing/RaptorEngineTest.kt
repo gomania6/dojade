@@ -830,4 +830,243 @@ class RaptorEngineTest {
         assertEquals(sec(8, 16), journey.arrivalTimeSec)
         assertTrue(journey.legs.last() is pl.poznan.offdojade.domain.model.JourneyLeg.TransitLeg)
     }
+
+    @Test
+    fun absurdSameHubHop_rondoKaponieraToRondoKaponiera_isRejected() {
+        // Реальный абсурдный кейс со скриншота:
+        // Пользователь на ул. Bukowska (~180 м от Bałtyk) строит маршрут до Bałtyk.
+        // Автобус 163 идёт с одной платформы Rondo Kaponiera (254 м от пользователя)
+        // на другую платформу Rondo Kaponiera (295 м от Bałtyk) — 1 остановка, 2 мин.
+        // Такая поездка должна быть полностью отсеяна!
+        val stops = listOf(
+            StopEntity("RKAP_W", "RKAP1", "Rondo Kaponiera", 52.4084, 16.9094, "A", "1"),
+            StopEntity("RKAP_E", "RKAP2", "Rondo Kaponiera", 52.4080, 16.9126, "A", "2"),
+            StopEntity("BAL", "BAL1", "Bałtyk", 52.4055, 16.9114, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R163", "ztm", "163", "163", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T163", "R163", "WK", "Garbary PKM", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T163", 1, "RKAP_W", sec(20, 32), sec(20, 32)),
+            StopTimeEntity("T163", 2, "RKAP_E", sec(20, 34), sec(20, 34))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = null,
+            originLat = 52.4063, // Bukowska (~180 м от Bałtyk)
+            originLon = 16.9094,
+            targetStopId = "BAL",
+            departureTimeSec = sec(20, 27),
+            limit = 8
+        )
+
+        assertTrue(
+            "Абсурдная поездка Rondo Kaponiera -> Rondo Kaponiera ради пешей цели Bałtyk должна быть отклонена",
+            results.isEmpty()
+        )
+    }
+
+    @Test
+    fun absurdWalkDominatedTrip_withDifferentStopNames_isRejected() {
+        // Даже если у платформ РАЗНЫЕ названия (Zwierzyniecka -> Rondo Kaponiera),
+        // поездка, где суммарная ходьба (~520 м) больше прямой дистанции до цели (~200 м),
+        // должна быть отсеяна!
+        val stops = listOf(
+            StopEntity("ZWI", "ZWI1", "Zwierzyniecka", 52.4084, 16.9094, "A", "1"),
+            StopEntity("RKAP", "RKAP2", "Rondo Kaponiera", 52.4080, 16.9126, "A", "2"),
+            StopEntity("BAL", "BAL1", "Bałtyk", 52.4055, 16.9114, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R163", "ztm", "163", "163", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T163", "R163", "WK", "Garbary PKM", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T163", 1, "ZWI", sec(20, 32), sec(20, 32)),
+            StopTimeEntity("T163", 2, "RKAP", sec(20, 34), sec(20, 34))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = null,
+            originLat = 52.4063,
+            originLon = 16.9094,
+            targetStopId = "BAL",
+            departureTimeSec = sec(20, 27),
+            limit = 8
+        )
+
+        assertTrue(
+            "Поездка с пешей частью больше прямой дистанции до цели должна быть отклонена",
+            results.isEmpty()
+        )
+    }
+
+    @Test
+    fun sameHubTwoPlatforms_stillRoutesCleanlyToNextRealStopWithoutInternalHop() {
+        // Автобус идёт: Rondo Kaponiera (платф. 1) -> Rondo Kaponiera (платф. 2) -> Most Teatralny.
+        // При поиске Rondo Kaponiera -> Most Teatralny должен сесть сразу на платф. 2 (1 ост.), а не ехать через 2 платф.
+        val stops = listOf(
+            StopEntity("RKAP_1", "RK1", "Rondo Kaponiera", 52.4084, 16.9094, "A", "1"),
+            StopEntity("RKAP_2", "RK2", "Rondo Kaponiera", 52.4080, 16.9126, "A", "2"),
+            StopEntity("MTEA", "MT1", "Most Teatralny", 52.4120, 16.9145, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R163", "ztm", "163", "163", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T163", "R163", "WK", "Most Teatralny", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T163", 1, "RKAP_1", sec(10, 0), sec(10, 0)),
+            StopTimeEntity("T163", 2, "RKAP_2", sec(10, 2), sec(10, 2)),
+            StopTimeEntity("T163", 3, "MTEA", sec(10, 5), sec(10, 5))
+        )
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, emptyList())
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "RKAP_1",
+            originLat = 52.4084,
+            originLon = 16.9094,
+            targetStopId = "MTEA",
+            departureTimeSec = sec(9, 55),
+            limit = 5
+        )
+
+        assertEquals(1, results.size)
+        val leg = results.first().transitLegs.first()
+        assertEquals("RKAP_2", leg.boardingStop.stopId)
+        assertEquals("MTEA", leg.alightingStop.stopId)
+        assertEquals(1, leg.stopsPassed)
+    }
+
+    @Test
+    fun convenientMode_doesNotForceWalkingToNeighboringOriginStopViaFootpath() {
+        // Пользователь выбрал остановку S_ORIG в режиме CONVENIENT.
+        // Соседняя остановка S_NEAR в 200 м имеет чуть более ранний автобус, но режим CONVENIENT
+        // не должен заставлять идти пешком на S_NEAR в раунде 0, если с S_ORIG есть прямой рейс.
+        val stops = listOf(
+            StopEntity("S_ORIG", "O1", "Orig Stop", 52.4000, 16.9000, "A", "1"),
+            StopEntity("S_NEAR", "N1", "Near Stop", 52.4018, 16.9000, "A", "1"), // ~200 м
+            StopEntity("S_DEST", "D1", "Dest Stop", 52.4200, 16.9000, "A", "1")
+        )
+        val routes = listOf(
+            RouteEntity("R1", "ztm", "1", "1", 0, "007A5E", "FFFFFF"),
+            RouteEntity("R2", "ztm", "2", "2", 3, "1565C0", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T_NEAR", "R2", "WK", "Dest Stop", 0, ""),
+            TripEntity("T_ORIG", "R1", "WK", "Dest Stop", 0, "")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T_NEAR", 1, "S_NEAR", sec(10, 4), sec(10, 4)),
+            StopTimeEntity("T_NEAR", 2, "S_DEST", sec(10, 14), sec(10, 14)),
+            StopTimeEntity("T_ORIG", 1, "S_ORIG", sec(10, 6), sec(10, 6)),
+            StopTimeEntity("T_ORIG", 2, "S_DEST", sec(10, 18), sec(10, 18))
+        )
+        val footpaths = FootpathGenerator.generateFootpaths(stops)
+        val graph = TransitGraphBuilder.build(20261126, stops, routes, trips, stopTimes, footpaths)
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "S_ORIG",
+            originLat = 52.4000,
+            originLon = 16.9000,
+            targetStopId = "S_DEST",
+            departureTimeSec = sec(10, 0),
+            tripSettings = TripSettings(routePreference = RoutePreference.CONVENIENT),
+            limit = 5
+        )
+
+        assertTrue(results.isNotEmpty())
+        assertEquals("S_ORIG", results.first().transitLegs.first().boardingStop.stopId)
+        assertTrue(results.first().legs.first() is JourneyLeg.TransitLeg)
+    }
+
+    @Test
+    fun geoUtils_haversineAntipodalPoints_neverReturnsNaN() {
+        val dist = pl.poznan.offdojade.data.gtfs.GeoUtils.haversineMeters(0.0, 0.0, 0.0, 180.0)
+        assertFalse(dist.isNaN())
+        assertTrue(dist > 20_000_000.0)
+    }
+
+    @Test
+    fun multimodalBusPlusRail_combinesZtmBusAndKwTrainWithStationTransfer_andMarksRailTicket() {
+        // Plewiska (автобус 716) -> Junikowo (пешая пересадка 360 м на станцию ж/д) -> PKM2 KW -> Poznań Główny за 8 мин
+        val stops = listOf(
+            StopEntity("ZTM_PLE", "PLE1", "Plewiska/Szkoła", 52.3690, 16.8050, "B", "1"),
+            StopEntity("ZTM_JUN", "JUN1", "Junikowo PKM", 52.3820, 16.8260, "A", "1"),
+            StopEntity("rail_JUN", "RJUN", "Poznań Junikowo", 52.3852, 16.8260, "A", "1"), // ~355 м от ZTM_JUN
+            StopEntity("rail_PG", "RPG", "Poznań Główny", 52.4021, 16.9122, "A", "2")
+        )
+        val routes = listOf(
+            RouteEntity("R_716", "ztm", "716", "Plewiska - Junikowo", 3, "1565C0", "FFFFFF"),
+            RouteEntity("rail_KW_PKM2", "rail_KW", "PKM2", "Nowy Tomyśl - Poznań", 2, "EA1A35", "FFFFFF")
+        )
+        val trips = listOf(
+            TripEntity("T_716", "R_716", "WK", "Junikowo PKM", 0, ""),
+            TripEntity("rail_T_PKM2", "rail_KW_PKM2", "rail_WK", "Poznań Główny", 0, "rail_SH_PKM2")
+        )
+        fun sec(h: Int, m: Int) = h * 3600 + m * 60
+        val stopTimes = listOf(
+            StopTimeEntity("T_716", 1, "ZTM_PLE", sec(7, 30), sec(7, 30)),
+            StopTimeEntity("T_716", 2, "ZTM_JUN", sec(7, 36), sec(7, 36)),
+            StopTimeEntity("rail_T_PKM2", 1, "rail_JUN", sec(7, 43), sec(7, 43)),
+            StopTimeEntity("rail_T_PKM2", 2, "rail_PG", sec(7, 51), sec(7, 51))
+        )
+        // Пересадка 355 м (> 220 м стандартного лимита BEST, но разрешена до 450 м для ж/д станций)
+        val transfers = listOf(
+            TransferEntity("ZTM_JUN", "rail_JUN", 2, 300, 355)
+        )
+        val graph = TransitGraphBuilder.build(20261127, stops, routes, trips, stopTimes, transfers)
+
+        val results = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "ZTM_PLE",
+            originLat = 52.3690,
+            originLon = 16.8050,
+            targetStopId = "rail_PG",
+            departureTimeSec = sec(7, 25),
+            tripSettings = TripSettings(routePreference = RoutePreference.BEST),
+            limit = 5
+        )
+
+        assertEquals(1, results.size)
+        val journey = results.first()
+        assertEquals(listOf("716", "PKM2"), journey.transitLegs.map { it.routeShortName })
+        assertTrue(journey.transitLegs[1].isRail)
+        assertTrue(journey.ticketRecommendation.hasRailLeg)
+        assertEquals(sec(7, 51), journey.arrivalTimeSec)
+
+        // Если отключить электрички в фильтрах — маршрут с поездом не предлагается
+        val noRailResults = engine.searchUpcomingJourneys(
+            data = graph,
+            originStopId = "ZTM_PLE",
+            originLat = 52.3690,
+            originLon = 16.8050,
+            targetStopId = "rail_PG",
+            departureTimeSec = sec(7, 25),
+            tripSettings = TripSettings(
+                routePreference = RoutePreference.BEST,
+                enabledTransportModes = setOf(
+                    pl.poznan.offdojade.domain.model.TransportMode.TRAM,
+                    pl.poznan.offdojade.domain.model.TransportMode.BUS
+                )
+            ),
+            limit = 5
+        )
+        assertTrue(noRailResults.isEmpty())
+    }
 }

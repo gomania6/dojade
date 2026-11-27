@@ -17,6 +17,7 @@ import pl.poznan.offdojade.domain.model.StopGroup
 import pl.poznan.offdojade.domain.model.TransitJourney
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 
 /**
@@ -68,7 +69,7 @@ class TransitGraphRepository(
     }
 
     suspend fun ensureLoadedForToday(): RaptorData? {
-        val today = LocalDate.now()
+        val today = LocalDate.now(WARSAW_ZONE)
         val todayInt = ServiceCalendarResolver.toYyyymmdd(today)
         val existing = _graph.value
         if (existing != null && existing.serviceDateYyyymmdd == todayInt && existing.stopCount > 0) {
@@ -77,7 +78,7 @@ class TransitGraphRepository(
         return loadOrRebuildForDate(date = today, forceRebuild = false)
     }
 
-    suspend fun reloadForToday(): RaptorData? = loadOrRebuildForDate(date = LocalDate.now(), forceRebuild = true)
+    suspend fun reloadForToday(): RaptorData? = loadOrRebuildForDate(date = LocalDate.now(WARSAW_ZONE), forceRebuild = true)
 
     /**
      * Строит (и кэширует) граф RAPTOR на произвольную дату (например, на завтра),
@@ -317,6 +318,8 @@ class TransitGraphRepository(
         }
 
     companion object {
+        private val WARSAW_ZONE: ZoneId = ZoneId.of("Europe/Warsaw")
+
         fun groupStopsByName(stops: List<StopEntity>): List<StopGroup> {
             val grouped = LinkedHashMap<String, MutableList<StopEntity>>()
             for (stop in stops) {
@@ -355,33 +358,31 @@ class TransitGraphRepository(
         boardingStopId: String,
         alightingStopId: String
     ): Pair<Pair<Double, Double>?, Pair<Double, Double>?> {
-        val g = _graph.value
-        if (g != null) {
-            val tripIdx = g.tripIds.indexOf(tripId)
-            if (tripIdx >= 0) {
-                val patternIdx = g.tripPatternIndex[tripIdx]
-                val stopCount = g.patternStopCount(patternIdx)
-                var boardPos = -1
-                var alightPos = -1
-                for (pos in 0 until stopCount) {
-                    val sIdx = g.patternStopAt(patternIdx, pos)
-                    val sId = g.stopIds[sIdx]
-                    if (boardPos == -1 && sId == boardingStopId) boardPos = pos
-                    if (boardPos != -1 && sId == alightingStopId) {
-                        alightPos = pos
-                        break
-                    }
+        val candidateGraphs = listOfNotNull(_graph.value, cachedAlternateDayGraph?.second)
+        for (g in candidateGraphs) {
+            val tripIdx = g.tripIdToIndex[tripId] ?: continue
+            val patternIdx = g.tripPatternIndex[tripIdx]
+            val stopCount = g.patternStopCount(patternIdx)
+            var boardPos = -1
+            var alightPos = -1
+            for (pos in 0 until stopCount) {
+                val sIdx = g.patternStopAt(patternIdx, pos)
+                val sId = g.stopIds[sIdx]
+                if (boardPos == -1 && sId == boardingStopId) boardPos = pos
+                if (boardPos != -1 && sId == alightingStopId) {
+                    alightPos = pos
+                    break
                 }
-                val prev = if (boardPos > 0) {
-                    val pIdx = g.patternStopAt(patternIdx, boardPos - 1)
-                    g.stopLats[pIdx] to g.stopLons[pIdx]
-                } else null
-                val next = if (alightPos in 0 until stopCount - 1) {
-                    val nIdx = g.patternStopAt(patternIdx, alightPos + 1)
-                    g.stopLats[nIdx] to g.stopLons[nIdx]
-                } else null
-                return prev to next
             }
+            val prev = if (boardPos > 0) {
+                val pIdx = g.patternStopAt(patternIdx, boardPos - 1)
+                g.stopLats[pIdx] to g.stopLons[pIdx]
+            } else null
+            val next = if (alightPos in 0 until stopCount - 1) {
+                val nIdx = g.patternStopAt(patternIdx, alightPos + 1)
+                g.stopLats[nIdx] to g.stopLons[nIdx]
+            } else null
+            return prev to next
         }
         return null to null
     }
@@ -402,7 +403,7 @@ class TransitGraphRepository(
     /**
      * Возвращает только те маршруты, которые реально курсируют в указанный день [date].
      */
-    suspend fun getAllRoutesSorted(date: LocalDate = LocalDate.now()): List<RouteEntity> = withContext(Dispatchers.IO) {
+    suspend fun getAllRoutesSorted(date: LocalDate = LocalDate.now(WARSAW_ZONE)): List<RouteEntity> = withContext(Dispatchers.IO) {
         val dateInt = ServiceCalendarResolver.toYyyymmdd(date)
         val calendars = dao.getAllCalendars()
         val calendarDates = dao.getCalendarDatesForDate(dateInt)
@@ -442,11 +443,12 @@ class TransitGraphRepository(
         route: RouteEntity,
         dayType: TimetableDayType
     ): List<StaticDirectionTimetable> = withContext(Dispatchers.IO) {
+        val today = LocalDate.now(WARSAW_ZONE)
         val targetDate = when (dayType) {
-            TimetableDayType.TODAY -> LocalDate.now()
-            TimetableDayType.WEEKDAY -> LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.WEDNESDAY))
-            TimetableDayType.SATURDAY -> LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.SATURDAY))
-            TimetableDayType.SUNDAY -> LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
+            TimetableDayType.TODAY -> today
+            TimetableDayType.WEEKDAY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.WEDNESDAY))
+            TimetableDayType.SATURDAY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SATURDAY))
+            TimetableDayType.SUNDAY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
         }
         val dateInt = ServiceCalendarResolver.toYyyymmdd(targetDate)
         val calendars = dao.getAllCalendars()
@@ -550,15 +552,23 @@ class TransitGraphRepository(
         boardingStopId: String,
         alightingStopId: String,
         routeShortName: String,
-        departureTimeSec: Int
+        departureTimeSec: Int,
+        tripId: String? = null,
+        dayOffset: Int = 0
     ): TransitLegInsight {
-        val g = _graph.value ?: return TransitLegInsight()
+        val altGraph = cachedAlternateDayGraph?.second
+        val g = when {
+            dayOffset > 0 && altGraph != null -> altGraph
+            tripId != null && altGraph != null && altGraph.tripIdToIndex.containsKey(tripId) -> altGraph
+            else -> _graph.value ?: altGraph
+        } ?: return TransitLegInsight()
+        val localDepSec = if (dayOffset > 0) (departureTimeSec - dayOffset * 86_400).coerceAtLeast(0) else departureTimeSec
         val boardSiblings = g.findSiblingStopIndices(boardingStopId)
         val alightSiblings = g.findSiblingStopIndices(alightingStopId).toHashSet()
         if (boardSiblings.isEmpty() || alightSiblings.isEmpty()) return TransitLegInsight()
 
-        val windowStart = departureTimeSec - 30 * 60
-        val windowEnd = departureTimeSec + 60 * 60
+        val windowStart = localDepSec - 30 * 60
+        val windowEnd = localDepSec + 60 * 60
 
         val altLines = LinkedHashSet<String>()
         val corridorDepartures = ArrayList<Int>(32)
@@ -617,7 +627,199 @@ class TransitGraphRepository(
             approxHeadwayMinutes = headwayMin
         )
     }
+
+    /**
+     * Быстро определяет, является ли линия трамвайной по текущему графу (с fallback на нумерацию Познани 1..20).
+     */
+    fun isRouteTram(routeShortName: String): Boolean {
+        val g = _graph.value
+        val norm = routeShortName.trim()
+        if (g != null && norm.isNotEmpty()) {
+            for (p in 0 until g.patternCount) {
+                if (g.patternRouteShortName[p].equals(norm, ignoreCase = true)) {
+                    return g.patternRouteType[p] == 0 || g.patternRouteType[p] == 900
+                }
+            }
+        }
+        val num = norm.toIntOrNull()
+        return num != null && (num in 1..20 || num == 98)
+    }
+
+    /**
+     * Возвращает направление (`headsign`) для конкретного `tripId` из графа в памяти за O(1) (для рендера всех машин на карте).
+     */
+    fun resolveQuickHeadsignAndType(
+        tripId: String?,
+        routeId: String?,
+        label: String
+    ): Triple<String, Boolean, String> {
+        val g = _graph.value
+        val fallbackLine = routeId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: label.substringBefore('/').trim().ifEmpty { "?" }
+
+        if (g != null && !tripId.isNullOrBlank()) {
+            val tripIdx = findTripIdxInGraph(g, tripId)
+            if (tripIdx >= 0) {
+                val pIdx = g.tripPatternIndex[tripIdx]
+                val line = g.patternRouteShortName[pIdx].ifBlank { fallbackLine }
+                val isTram = g.patternRouteType[pIdx] == 0 || g.patternRouteType[pIdx] == 900
+                val headsign = g.patternHeadsign[pIdx].ifBlank {
+                    val lastIdx = g.patternStopAt(pIdx, (g.patternStopCount(pIdx) - 1).coerceAtLeast(0))
+                    g.stopNames[lastIdx]
+                }
+                return Triple(line, isTram, headsign)
+            }
+        }
+        return Triple(fallbackLine, isRouteTram(fallbackLine), "")
+    }
+
+    /**
+     * Полная информация о выбранном живом транспорте на карте:
+     * линия, направление (куда едет), `shapeId` для полупрозрачной линии маршрута,
+     * список остановок на трассе и текущая/следующая остановка.
+     */
+    fun resolveVehicleRouteSnapshot(
+        tripId: String?,
+        routeId: String?,
+        label: String,
+        currentStopId: String?,
+        vehicleLat: Double,
+        vehicleLon: Double,
+        bearing: Float?
+    ): VehicleRouteSnapshot? {
+        val g = _graph.value ?: return null
+        val fallbackLine = routeId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: label.substringBefore('/').trim().ifEmpty { "?" }
+
+        var tripIdx = if (!tripId.isNullOrBlank()) findTripIdxInGraph(g, tripId) else -1
+        var patternIdx = if (tripIdx >= 0) g.tripPatternIndex[tripIdx] else -1
+
+        // Fallback: если tripId отсутствует в текущем графе, подбираем наиболее подходящий паттерн той же линии
+        // по ближайшей остановке и совпадению азимута движения
+        if (patternIdx < 0 && fallbackLine != "?") {
+            var bestP = -1
+            var bestScore = Double.MAX_VALUE
+            for (p in 0 until g.patternCount) {
+                if (!g.patternRouteShortName[p].equals(fallbackLine, ignoreCase = true)) continue
+                val pStopCount = g.patternStopCount(p)
+                if (pStopCount < 2) continue
+                var nearestPos = 0
+                var nearestDist = Double.MAX_VALUE
+                for (pos in 0 until pStopCount) {
+                    val sIdx = g.patternStopAt(p, pos)
+                    val d = pl.poznan.offdojade.data.gtfs.GeoUtils.haversineMeters(
+                        vehicleLat, vehicleLon, g.stopLats[sIdx], g.stopLons[sIdx]
+                    )
+                    if (d < nearestDist) {
+                        nearestDist = d
+                        nearestPos = pos
+                    }
+                }
+                var penalty = nearestDist
+                if (bearing != null && bearing > 0f) {
+                    val aIdx = g.patternStopAt(p, nearestPos.coerceAtMost(pStopCount - 2))
+                    val bIdx = g.patternStopAt(p, (nearestPos + 1).coerceAtMost(pStopCount - 1))
+                    val segBearing = computeBearing(g.stopLats[aIdx], g.stopLons[aIdx], g.stopLats[bIdx], g.stopLons[bIdx])
+                    val diff = kotlin.math.abs(bearing.toDouble() - segBearing) % 360.0
+                    val ang = if (diff > 180.0) 360.0 - diff else diff
+                    if (ang > 100.0) penalty += 5_000.0
+                }
+                if (penalty < bestScore) {
+                    bestScore = penalty
+                    bestP = p
+                }
+            }
+            if (bestP >= 0) {
+                patternIdx = bestP
+                val tStart = g.patternTripOffsets[bestP]
+                if (tStart < g.patternTripOffsets[bestP + 1]) {
+                    tripIdx = tStart
+                }
+            }
+        }
+
+        if (patternIdx < 0) return null
+
+        val pStopCount = g.patternStopCount(patternIdx)
+        val stops = ArrayList<LiveRouteStopPoint>(pStopCount)
+        var currentStopPos = -1
+        var nearestPos = 0
+        var nearestDist = Double.MAX_VALUE
+
+        for (pos in 0 until pStopCount) {
+            val sIdx = g.patternStopAt(patternIdx, pos)
+            val sId = g.stopIds[sIdx]
+            val sName = g.stopNames[sIdx]
+            val lat = g.stopLats[sIdx]
+            val lon = g.stopLons[sIdx]
+            stops.add(LiveRouteStopPoint(stopId = sId, stopName = sName, latitude = lat, longitude = lon))
+            if (currentStopId != null && sId == currentStopId) {
+                currentStopPos = pos
+            }
+            val d = pl.poznan.offdojade.data.gtfs.GeoUtils.haversineMeters(vehicleLat, vehicleLon, lat, lon)
+            if (d < nearestDist) {
+                nearestDist = d
+                nearestPos = pos
+            }
+        }
+
+        val resolvedCurrentPos = if (currentStopPos >= 0) currentStopPos else nearestPos
+        val currentStopName = stops.getOrNull(resolvedCurrentPos)?.stopName
+        val nextStopName = stops.getOrNull(resolvedCurrentPos + 1)?.stopName
+        val line = g.patternRouteShortName[patternIdx].ifBlank { fallbackLine }
+        val isTram = g.patternRouteType[patternIdx] == 0 || g.patternRouteType[patternIdx] == 900
+        val headsign = g.patternHeadsign[patternIdx].ifBlank { stops.lastOrNull()?.stopName.orEmpty() }
+        val shapeId = if (tripIdx >= 0) g.tripShapeIds[tripIdx] else ""
+
+        return VehicleRouteSnapshot(
+            routeShortName = line,
+            isTram = isTram,
+            headsign = headsign,
+            shapeId = shapeId,
+            stops = stops,
+            currentStopName = currentStopName,
+            nextStopName = nextStopName
+        )
+    }
+
+    private fun findTripIdxInGraph(g: RaptorData, tripId: String): Int {
+        g.tripIdToIndex[tripId]?.let { return it }
+        val core = tripId.substringAfter('_', "")
+        if (core.isNotEmpty()) {
+            for (i in 0 until g.tripCount) {
+                if (g.tripIds[i].substringAfter('_', "") == core) return i
+            }
+        }
+        return -1
+    }
+
+    private fun computeBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = kotlin.math.sin(dLon) * kotlin.math.cos(phi2)
+        val x = kotlin.math.cos(phi1) * kotlin.math.sin(phi2) -
+            kotlin.math.sin(phi1) * kotlin.math.cos(phi2) * kotlin.math.cos(dLon)
+        return (Math.toDegrees(kotlin.math.atan2(y, x)) + 360.0) % 360.0
+    }
 }
+
+data class LiveRouteStopPoint(
+    val stopId: String,
+    val stopName: String,
+    val latitude: Double,
+    val longitude: Double
+)
+
+data class VehicleRouteSnapshot(
+    val routeShortName: String,
+    val isTram: Boolean,
+    val headsign: String,
+    val shapeId: String,
+    val stops: List<LiveRouteStopPoint>,
+    val currentStopName: String?,
+    val nextStopName: String?
+)
 
 data class TransitLegInsight(
     val alternativeLines: List<String> = emptyList(),
