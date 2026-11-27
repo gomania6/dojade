@@ -1,6 +1,9 @@
 package pl.poznan.offdojade.ui.onboarding
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.res.painterResource
+import pl.poznan.offdojade.R
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -56,12 +59,22 @@ fun OnboardingScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Spacer(Modifier.height(8.dp))
-            Text(
-                text = "OffDojade • ZTM Poznań",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_pyrtransit_logo),
+                    contentDescription = "PyrTransit",
+                    modifier = Modifier.size(44.dp)
+                )
+                Text(
+                    text = "PyrTransit • ZTM Poznań",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
             Text(
                 text = s.onboardingSubtitle,
                 style = MaterialTheme.typography.bodyMedium,

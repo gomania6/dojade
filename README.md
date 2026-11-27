@@ -1,43 +1,39 @@
-# OffDojade — Offline Transit Navigator for ZTM Poznań
+# PyrTransit — Offline-First Transit Navigator for ZTM Poznań
 
-**OffDojade** is an offline-first Android public transit navigator for **ZTM Poznań** (trams, city buses, suburban buses, and night lines across tariff zones **A, B, C, D**).  
-Built with Kotlin, Jetpack Compose (Material 3 AMOLED UI), Room, MapLibre Native, and a custom in-memory **RAPTOR** routing engine.
+**PyrTransit** is a fast, offline-first Android public transit navigator for **ZTM Poznań** (trams, city buses, suburban buses, and night lines across tariff zones **A, B, C, D**).
+
+Built with **Kotlin**, **Jetpack Compose (Material 3)**, a custom in-memory **RAPTOR** routing engine, **MapLibre Native** with offline **PMTiles** vector maps, and **GTFS-RT** real-time tracking.
 
 ---
 
 ## Features
 
-- **Ultra-fast offline routing (RAPTOR)**
-  - Runs completely offline in **1–5 ms** on compact primitive-array graphs with a binary disk cache (`RaptorDataCache`).
-  - Multi-criteria trip profiles: **Convenient** (fewest transfers, minimal cross-stop walking), **Best** (balanced), and **Fastest** (shortest arrival, walking transfers ≤ 300 m).
-  - Smart late-evening / night mode (21:00–05:00) that maximizes route coverage when service is sparse, plus automatic next-day rollover when today's departures end.
-  - Full date & time planning (**Depart at** / **Arrive by**, Today / Tomorrow / Day after tomorrow / Calendar picker).
-- **Live GTFS-RT & Interactive Offline Map**
-  - Real-time delays, live countdowns, and animated live-signal indicators from ZTM Poznań GTFS-RT feeds (`trip_updates.pb`, `vehicle_positions.pb`).
-  - Vector offline map powered by **MapLibre Native + PMTiles** (`poznan.pmtiles`) with color-coded transit legs, white styling for night buses, road-following pedestrian paths (OSRM with offline fallback), tappable route stops, and live vehicle popups showing only vehicles on the active route.
-- **ZTM Poznań Smart Ticket Calculator**
-  - Compares time tickets (15 / 45 / 90 min / 24h) with **PEKA tPortmonetka** degressive per-stop pricing.
-  - Supports **Normalny** and **Ulgowy (50%)** tariffs, the **18.00 zł / 9.00 zł** daily cap, and the **20-minute transfer continuation rule** (up to 3 continuous transfers).
-  - Displays Jakdojade-style circular badges for tariff zones **B / C / D** and on-demand stops (**ПТ / NŻ / ПВ / REQ / BH** from GTFS `pickup_type = 3` / `drop_off_type = 3`).
-- **Search, Timetables & Quick Routes**
-  - Polish diacritic-folding fuzzy stop search, street/house-number/POI **address search** (Photon / Nominatim / Android Geocoder), trip history, and recent stops.
-  - One-tap **Quick Routes** (Home / Center / Work) using fresh GPS geolocation to find the nearest departure stop.
-  - Static timetables browser with active-day filtering and compact line grid.
-- **Automatic Offline Sync**
-  - Background WorkManager sync every 12 hours + startup version check against prebuilt SQLite schedules on GitHub Releases (with direct ZTM GTFS ZIP fallback).
-- **5 Languages & AMOLED Theme**
-  - Full localization: **Russian (RU)**, **Ukrainian (UK)**, **Polish (PL)**, **English (EN)**, and **German (DE)**.
-  - Pitch-black AMOLED dark theme, light theme, and system-default theme.
+- **Instant Offline Routing (RAPTOR)**
+  - In-memory array-based RAPTOR engine (~1–10 ms per query) with binary disk cache (`raptor_graph_v1_YYYYMMDD.bin`) and cold-start pre-warming for today and tomorrow.
+  - Supports stop-to-stop, GPS-to-stop, address-to-address, and **interactive map location picking** directly from the home screen.
+  - Flexible trip planning: **Now**, **Depart at**, **Arrive by**, and **arbitrary future date selection** (tomorrow, day after tomorrow, or calendar picker) with automatic next-day transitions and day dividers.
+  - Three route profiles: **Fastest**, **Best** (3–20 min comfortable transfers), and **Convenient** (fewer transfers, avoids unnecessary walks).
+  - Swipe-down / swipe-up pagination for earlier and later departures, with automatic list preservation when inspecting trip details.
 
----
+- **Real-Time Tracking & Dynamic Notifications (GTFS-RT)**
+  - Live `trip_updates.pb` and `vehicle_positions.pb` polling via Square Wire protobufs with graceful offline fallback and a dismissible offline notice banner.
+  - Pulsing live signal indicators (green for on-schedule, red for delayed) across route lists and trip headers.
+  - Exact single-trip live bus and tram markers on the map with delay & freshness popups.
+  - **Dynamic Trip Tracking Notification** (`TripTrackingService`): ongoing notification with progress bar, live vehicle stop position, remaining stops/minutes, transfer instructions, and next-stop exit alerts.
+  - **Background Schedule Sync Notification**: silent progress notification when WorkManager updates the offline schedule in the background.
 
-## Tech Stack
+- **Offline Vector Maps (MapLibre + PMTiles)**
+  - Full Poznań & agglomeration offline map (`poznan.pmtiles`, Protomaps v4) with automatic **Light & Dark Theme** palettes.
+  - Street names, district labels, and 18 major Poznań universities & landmarks shown on zoom.
+  - Zoom-aware route stops (intermediate stops appear when zoomed in; start, end, and transfer stops stay visible) with tap-to-inspect stop details (zone badges `B`/`C`/`D`, on-demand `NŻ` / `ПТ` badges).
+  - Interactive **stop maps inside Static Timetables** (`List | Map` toggle per route direction).
 
-- **Language & UI:** Kotlin 2.0, Jetpack Compose, Material 3, Navigation Compose
-- **Routing & Data:** Custom RAPTOR engine, Room (SQLite), DataStore Preferences, binary `RaptorDataCache`
-- **Maps & Location:** MapLibre Native Android (`PMTiles`), Google Play Services Location, OSRM Foot Routing, Photon / Nominatim Geocoding
-- **Networking & Protobuf:** OkHttp, Square Wire (GTFS-RT), Kotlinx Serialization
-- **DI & Background Work:** Koin, AndroidX WorkManager
+- **ZTM Poznań Tariff Calculator**
+  - Automatic comparison of **PEKA tPortmonetka** (including ≤ 20-minute transfer continuation rules) vs **time-based tickets** (15 / 45 / 90 min, 24h) for both **Normalny** and **Ulgowy** fares across zones **A / B / C / D**.
+  - Automatically hides ZTM pricing on non-ZTM PKS routes.
+
+- **5-Language Interface**
+  - Built-in support for **Polish (PL)**, **English (EN)**, **Russian (RU)**, **Ukrainian (UK)**, and **German (DE)**.
 
 ---
 
@@ -45,36 +41,51 @@ Built with Kotlin, Jetpack Compose (Material 3 AMOLED UI), Room, MapLibre Native
 
 ```text
 app/src/main/java/pl/poznan/offdojade/
-├── config/           # AppConfig (GitHub Releases & ZTM URLs), ZtmTariffConfig
+├── config/           # AppConfig (GitHub Releases & GTFS-RT URLs), ZtmTariffConfig
 ├── data/
-│   ├── gtfs/         # GtfsImporter, PrebuiltDbDownloader, ServiceCalendarResolver
-│   ├── local/        # Room GtfsDatabase (v3), DatabaseHolder, PreferencesRepository
-│   ├── location/     # LocationProvider, AddressSearchProvider, WalkingRouteProvider
-│   ├── map/          # MapDownloader (PMTiles)
-│   ├── realtime/     # GtfsRtClient, RealtimeRepository
-│   └── worker/       # GtfsSyncWorker (12h background sync)
+│   ├── gtfs/         # GtfsImporter, PrebuiltDbDownloader, GeoUtils
+│   ├── local/        # Room v3 GtfsDatabase, DAOs, DataStore PreferencesRepository
+│   ├── location/     # GPS LocationProvider, AddressSearchProvider, WalkingRouteProvider
+│   ├── map/          # Offline PMTiles MapDownloader
+│   ├── notifications/# OffDojadeNotifications, TripTrackingService (dynamic notification)
+│   ├── realtime/     # GtfsRtClient (Wire), RealtimeRepository
+│   └── worker/       # GtfsSyncWorker (12h background schedule sync)
 ├── domain/
-│   ├── model/        # TransitJourney, TripSettings, PlannedTime, AppSettings
-│   ├── routing/      # RaptorEngine, RaptorData, RaptorDataCache, TransitGraphBuilder, TransitGraphRepository
+│   ├── model/        # JourneyModels, StopGroup, PlannedTime, TripSettings
+│   ├── routing/      # RaptorEngine, RaptorData, RaptorDataCache, TransitGraphRepository
 │   └── tariff/       # ZtmTicketCalculator
 └── ui/
-    ├── components/   # LineBadge, AnimatedLiveSignal, TicketRecommendationCard
-    ├── details/      # RouteDetailsScreen (MapLibre + collapsible timeline)
-    ├── home/         # HomeScreen (search, quick routes, history, date/time picker)
-    ├── localization/ # AppStrings (RU / UK / PL / EN / DE)
-    ├── onboarding/   # Initial schedule & offline map download
-    ├── results/      # RouteResultsScreen (upcoming / earlier / later / next day)
-    ├── settings/     # Trip preferences, theme, language, sync controls
-    └── timetables/   # Static lines & stop departures browser
+    ├── components/   # OfflineMapStyleHelper, MapLocationPickerDialog, TransitComponents
+    ├── details/      # RouteDetailsScreen & RouteDetailsViewModel
+    ├── home/         # HomeScreen & HomeViewModel
+    ├── localization/ # AppStrings (PL / EN / RU / UK / DE)
+    ├── onboarding/   # OnboardingScreen & OnboardingViewModel
+    ├── results/      # RouteResultsScreen & RouteResultsViewModel
+    ├── settings/     # SettingsScreen & SettingsViewModel
+    └── timetables/   # TimetablesScreen & TimetablesViewModel
 ```
 
 ---
 
-## Building from Source
+## Automated Schedule & Map Releases
+
+GitHub Actions automatically builds and publishes pre-compiled offline assets to GitHub Releases so the app can sync in ~1 second instead of parsing raw GTFS CSV files on-device:
+
+- Schedule metadata: `https://github.com/gomania6/pyrtransit/releases/download/schedule-latest/version.json`
+- Prebuilt Room v3 SQLite DB (gzipped): `https://github.com/gomania6/pyrtransit/releases/download/schedule-latest/poznan_schedule.db.gz`
+- Offline vector map (Protomaps v4 PMTiles): `https://github.com/gomania6/pyrtransit/releases/download/map-v1/poznan.pmtiles`
+
+Workflows:
+- [`.github/workflows/update-ztm-schedule.yml`](.github/workflows/update-ztm-schedule.yml) — nightly GTFS fetch & SQLite build (`scripts/build_gtfs_db.py`).
+- [`.github/workflows/build-poznan-map.yml`](.github/workflows/build-poznan-map.yml) — Poznań & agglomeration PMTiles vector map extractor.
+
+---
+
+## Building Locally
 
 ### Requirements
-- **JDK 21** (Gradle 8.9 + AGP 8.7.3)
-- Android SDK 35 (`minSdk = 26`, `targetSdk = 35`)
+- **JDK 21**
+- **Android SDK** (compileSdk 35, minSdk 26)
 
 ### Commands
 
@@ -82,39 +93,16 @@ app/src/main/java/pl/poznan/offdojade/
 # Run unit tests
 ./gradlew testDebugUnitTest
 
-# Build debug APK
-./gradlew assembleDebug
-
-# Build minified & resource-shrunk release APK (~24 MB)
+# Build optimized release APK (R8 minification + resource shrinking)
 ./gradlew assembleRelease
 ```
 
-On Windows PowerShell (if another JDK is default in `PATH`):
-
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Java\jdk-21.0.10"
-.\gradlew.bat testDebugUnitTest assembleRelease
-```
-
-Release APK output: `app/build/outputs/apk/release/app-release.apk`.
-
----
-
-## Prebuilt Offline Schedule & Map Pipeline
-
-To avoid heavy on-device GTFS parsing, schedules can be prebuilt into a Room-compatible SQLite database using [`scripts/build_gtfs_db.py`](scripts/build_gtfs_db.py) and published to GitHub Releases (`schedule-latest`):
-
-- `https://github.com/gomania6/offdojade/releases/download/schedule-latest/version.json`
-- `https://github.com/gomania6/offdojade/releases/download/schedule-latest/poznan_schedule.db.gz`
-- `https://github.com/gomania6/offdojade/releases/download/map-v1/poznan.pmtiles`
-
-```bash
-python3 scripts/build_gtfs_db.py --output-dir dist
-```
+The release APK is generated at `app/build/outputs/apk/release/app-release.apk`.
 
 ---
 
 ## Data Sources
 
-- Static schedules & real-time feeds: [ZTM Poznań Open Data (GTFS / GTFS-RT)](https://www.ztm.poznan.pl/pl/dla-deweloperow/)
-- Map data, geocoding & pedestrian routing: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (PMTiles / Photon / OSRM)
+- Static schedules & real-time feeds: **ZTM Poznań** Open Data (`ztm.poznan.pl`)
+- Offline vector map tiles: **OpenStreetMap** / **Protomaps**
+- Walking geometry & geocoding: **OSRM** / **Photon** / **Nominatim**

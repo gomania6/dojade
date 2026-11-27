@@ -19,7 +19,9 @@ import pl.poznan.offdojade.data.local.TripHistoryEntry
 import pl.poznan.offdojade.data.location.AddressSearchProvider
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.location.UserLocation
+import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
+import java.io.File
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.AddressResult
 import pl.poznan.offdojade.domain.model.NearbyStopBoard
@@ -69,8 +71,15 @@ class HomeViewModel(
     private val realtimeRepository: RealtimeRepository,
     private val locationProvider: LocationProvider,
     private val preferencesRepository: PreferencesRepository,
-    private val addressSearchProvider: AddressSearchProvider
+    private val addressSearchProvider: AddressSearchProvider,
+    private val mapDownloader: MapDownloader
 ) : ViewModel() {
+
+    fun getLocalMapFile(): File? =
+        mapDownloader.getLocalMapFile().takeIf { it.exists() && it.length() > 0L }
+
+    suspend fun getAllStopGroupsForMap(): List<StopGroup> =
+        transitGraphRepository.searchStopGroups("", limit = 5_000)
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()

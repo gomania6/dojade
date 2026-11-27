@@ -49,11 +49,17 @@ class TransitGraphRepository(
     @Volatile
     private var cachedAlternateDayGraph: Pair<Int, RaptorData>? = null
 
+    @Volatile
+    var cachedRouteResults: CachedRouteResults? = null
+
     fun selectJourney(journey: TransitJourney) {
         _selectedJourney.value = journey
     }
 
     fun setActiveSearchRequest(request: RouteSearchRequest) {
+        // При каждом новом/повторном поиске с главного экрана сбрасываем кэш списка,
+        // чтобы маршруты пересчитывались заново с актуального времени
+        cachedRouteResults = null
         _activeSearchRequest.value = request
     }
 
@@ -521,7 +527,9 @@ class TransitGraphRepository(
                     zoneId = stop.zoneId.ifBlank { "A" },
                     platformCode = stop.platformCode,
                     isTerminal = index == canonicalStops.lastIndex,
-                    departures = deps
+                    departures = deps,
+                    latitude = stop.stopLat,
+                    longitude = stop.stopLon
                 )
             }
 
@@ -635,11 +643,27 @@ data class StaticStopTimetable(
     val zoneId: String,
     val platformCode: String,
     val isTerminal: Boolean,
-    val departures: List<StaticDepartureEntry>
+    val departures: List<StaticDepartureEntry>,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0
 )
 
 data class StaticDirectionTimetable(
     val directionId: Int,
     val headsign: String,
     val stops: List<StaticStopTimetable>
+)
+
+data class CachedRouteResults(
+    val request: RouteSearchRequest,
+    val tripSettings: pl.poznan.offdojade.domain.model.TripSettings,
+    val journeys: List<TransitJourney>,
+    val searchDurationMs: Long,
+    val referenceNowSec: Int,
+    val loadedDayOffset: Int,
+    val maxDayOffset: Int,
+    val noMoreEarlier: Boolean,
+    val noMoreLater: Boolean,
+    val originLat: Double,
+    val originLon: Double
 )

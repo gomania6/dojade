@@ -35,6 +35,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
+import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material3.Button
@@ -56,7 +58,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -71,9 +75,11 @@ import pl.poznan.offdojade.domain.routing.StaticDepartureEntry
 import pl.poznan.offdojade.domain.routing.StaticStopTimetable
 import pl.poznan.offdojade.domain.routing.TimetableDayType
 import pl.poznan.offdojade.ui.components.LineBadge
+import pl.poznan.offdojade.ui.components.TimetableStopsMapView
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.NightBusOnWhite
 import pl.poznan.offdojade.ui.theme.NightBusWhite
+import java.io.File
 import java.time.LocalTime
 import java.util.Locale
 
@@ -164,6 +170,7 @@ fun TimetablesScreen(
                     if (state.selectedRoute != null) {
                         RouteStopsView(
                             state = state,
+                            localMapFile = remember { viewModel.getLocalMapFile() },
                             onSelectDayType = viewModel::selectDayType,
                             onSelectDirection = viewModel::selectDirection,
                             onSelectStop = viewModel::selectStop,
@@ -309,7 +316,7 @@ private fun LinesBrowserView(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(state.filteredRoutes, key = { it.routeId }) { route ->
-                        val isNightBus = route.routeType != 0 && TransportMode.isNightLine(route.shortName)
+                        val isNightBus = TransportMode.isNightLine(route.shortName)
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -347,12 +354,14 @@ private fun LinesBrowserView(
 @Composable
 private fun RouteStopsView(
     state: TimetablesUiState,
+    localMapFile: File?,
     onSelectDayType: (TimetableDayType) -> Unit,
     onSelectDirection: (Int) -> Unit,
     onSelectStop: (StaticStopTimetable) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
+    var showMapView by remember(state.selectedRoute?.routeId) { mutableStateOf(false) }
 
     Column(modifier = modifier) {
         DayTypeSelectorRow(
@@ -403,46 +412,91 @@ private fun RouteStopsView(
             )
         }
 
-        val currentDir = state.currentDirection ?: return
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        // Переключатель «Список | Карта»
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(currentDir.stops, key = { it.stopId }) { stop ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(enabled = !stop.isTerminal) { onSelectStop(stop) },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Row(
+            FilterChip(
+                selected = !showMapView,
+                onClick = { showMapView = false },
+                label = { Text(s.stopsListTab) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.FormatListBulleted,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            )
+            FilterChip(
+                selected = showMapView,
+                onClick = { showMapView = true },
+                label = { Text(s.stopsMapTab) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Map,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            )
+        }
+
+        val currentDir = state.currentDirection ?: return
+        if (showMapView) {
+            val isTram = state.selectedRoute?.routeType == 0
+            val lineColorHex = if (isTram) "#3FA372" else "#4B83C3"
+            TimetableStopsMapView(
+                stops = currentDir.stops,
+                lineColorHex = lineColorHex,
+                localMapFile = localMapFile,
+                onSelectStop = onSelectStop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(currentDir.stops, key = { it.stopId }) { stop ->
+                    Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .clickable(enabled = !stop.isTerminal) { onSelectStop(stop) },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stop.stopName,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "${s.zonePrefix} ${stop.zoneId}" +
-                                    if (stop.platformCode.isNotBlank()) " • ${s.platformPrefix} ${stop.platformCode}" else "",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (!stop.isTerminal) {
-                            Icon(
-                                imageVector = Icons.Default.ChevronRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stop.stopName,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "${s.zonePrefix} ${stop.zoneId}" +
+                                        if (stop.platformCode.isNotBlank()) " • ${s.platformPrefix} ${stop.platformCode}" else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (!stop.isTerminal) {
+                                Icon(
+                                    imageVector = Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }

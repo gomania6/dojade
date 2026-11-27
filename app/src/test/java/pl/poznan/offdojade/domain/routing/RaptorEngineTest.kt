@@ -339,8 +339,8 @@ class RaptorEngineTest {
             StopTimeEntity("T_5", 1, "GOR", sec(10, 1), sec(10, 1)),
             StopTimeEntity("T_5", 2, "HUB", sec(10, 8), sec(10, 8)),
 
-            StopTimeEntity("T_2", 1, "HUB", sec(10, 10), sec(10, 10)),
-            StopTimeEntity("T_2", 2, "DEB", sec(10, 16), sec(10, 16)),
+            StopTimeEntity("T_2", 1, "HUB", sec(10, 11), sec(10, 11)),
+            StopTimeEntity("T_2", 2, "DEB", sec(10, 17), sec(10, 17)),
 
             StopTimeEntity("T_14", 1, "GOR", sec(10, 0), sec(10, 0)),
             StopTimeEntity("T_14", 2, "NORTH", sec(10, 25), sec(10, 25)),

@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OffDojade"
+rootProject.name = "PyrTransit"
 include(":app")

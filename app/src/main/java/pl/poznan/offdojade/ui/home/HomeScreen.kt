@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
@@ -96,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
+import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.QuickDestination
 import pl.poznan.offdojade.data.local.QuickDestinationSlot
 import pl.poznan.offdojade.data.local.RecentStopEntry
@@ -106,6 +108,7 @@ import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.StopGroup
 import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.ui.components.LineBadge
+import pl.poznan.offdojade.ui.components.MapLocationPickerDialog
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
 import pl.poznan.offdojade.ui.theme.ArrivalPillBlue
@@ -172,6 +175,8 @@ fun HomeScreen(
         null -> ""
     }
     var showTimePickerDialog by remember { mutableStateOf(false) }
+    var mapPickerField by remember { mutableStateOf<ActiveStopField?>(null) }
+    var mapPickerStops by remember { mutableStateOf<List<StopGroup>>(emptyList()) }
 
     BackHandler(enabled = isSearchMode) {
         focusManager.clearFocus()
@@ -502,6 +507,54 @@ fun HomeScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (isSearchMode) {
+                item(key = "pick_on_map_action") {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val field = state.activeField ?: return@clickable
+                                focusManager.clearFocus()
+                                mapPickerField = field
+                                scope.launch {
+                                    mapPickerStops = viewModel.getAllStopGroupsForMap()
+                                }
+                            },
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Map,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = s.pickOnMapLabel,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             // Если база пуста в режиме поиска
             if (isSearchMode && !state.graphReady) {
                 item {
@@ -876,6 +929,44 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // Диалог выбора остановки или точки на карте
+    val pickerField = mapPickerField
+    if (pickerField != null) {
+        val initLat = state.userLocation?.latitude ?: AppConfig.POZNAN_CENTER_LAT
+        val initLon = state.userLocation?.longitude ?: AppConfig.POZNAN_CENTER_LON
+        MapLocationPickerDialog(
+            title = if (pickerField == ActiveStopField.FROM) s.pointALabel else s.pointBLabel,
+            localMapFile = remember { viewModel.getLocalMapFile() },
+            initialLat = initLat,
+            initialLon = initLon,
+            stopGroups = mapPickerStops,
+            onPickStop = { group ->
+                mapPickerField = null
+                when (pickerField) {
+                    ActiveStopField.FROM -> viewModel.selectFromStop(group)
+                    ActiveStopField.TO -> {
+                        if (viewModel.selectToStop(group)) {
+                            viewModel.prepareRouteSearch(RouteEndpoint.Stop(group))
+                            onOpenRouteResults()
+                        }
+                    }
+                }
+            },
+            onPickLocation = { addr ->
+                mapPickerField = null
+                when (pickerField) {
+                    ActiveStopField.FROM -> viewModel.selectFromAddress(addr)
+                    ActiveStopField.TO -> {
+                        viewModel.selectToAddress(addr)
+                        viewModel.prepareRouteSearch(RouteEndpoint.Address(addr))
+                        onOpenRouteResults()
+                    }
+                }
+            },
+            onDismiss = { mapPickerField = null }
+        )
     }
 
     // Диалог планирования времени отправления / прибытия

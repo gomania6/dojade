@@ -1,16 +1,24 @@
 package pl.poznan.offdojade.ui.details
 
+import android.Manifest
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColor
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -56,9 +64,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Tram
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -123,13 +134,18 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import pl.poznan.offdojade.config.AppConfig
+import pl.poznan.offdojade.data.notifications.OffDojadeNotifications
+import pl.poznan.offdojade.data.notifications.TripTrackingService
 import pl.poznan.offdojade.data.realtime.LiveVehicle
 import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TransportMode
+import pl.poznan.offdojade.data.gtfs.GeoUtils
+import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.TransitLegInsight
 import pl.poznan.offdojade.ui.components.AnimatedLiveSignal
+import pl.poznan.offdojade.ui.components.OfflineMapStyleHelper
 import pl.poznan.offdojade.ui.components.TicketRecommendationCard
 import pl.poznan.offdojade.ui.components.TimeFormatUtils
 import pl.poznan.offdojade.ui.localization.LocalStrings
@@ -139,6 +155,7 @@ import pl.poznan.offdojade.ui.theme.DelayRed
 import pl.poznan.offdojade.ui.theme.DeparturePillGreen
 import pl.poznan.offdojade.ui.theme.LiveGreen
 import pl.poznan.offdojade.ui.theme.NightBusOnWhite
+import pl.poznan.offdojade.ui.theme.NightBusWhite
 import pl.poznan.offdojade.ui.theme.OfflineGray
 import java.io.File
 import java.time.LocalTime
@@ -164,7 +181,10 @@ private data class SelectedStopPopup(
 private sealed interface TimelineDisplayItem {
     data class WalkOrWait(
         val walkLeg: JourneyLeg.WalkLeg?,
-        val waitSeconds: Int
+        val walkSeconds: Int,
+        val waitSeconds: Int,
+        val isPlatformChange: Boolean = false,
+        val nextPlatformCode: String = ""
     ) : TimelineDisplayItem
 
     data class Transit(
@@ -183,21 +203,51 @@ private fun buildTimelineItems(journey: TransitJourney): List<TimelineDisplayIte
     for (i in journey.legs.indices) {
         when (val leg = journey.legs[i]) {
             is JourneyLeg.WalkLeg -> {
+                val prevTransit = journey.legs.getOrNull(i - 1) as? JourneyLeg.TransitLeg
                 val nextTransit = journey.legs.getOrNull(i + 1) as? JourneyLeg.TransitLeg
-                val waitSec = if (nextTransit != null) {
-                    (nextTransit.startTimeSec - leg.endTimeSec).coerceAtLeast(0)
+                val realWalkSec = GeoUtils.walkingTimeSeconds(leg.distanceMeters.toDouble())
+                val isPlatformChange = prevTransit != null && nextTransit != null &&
+                    RaptorData.normalizeStopName(leg.fromName) == RaptorData.normalizeStopName(leg.toName)
+                // Считаем пересадку в точных отображаемых минутах (как на капсулах 16:34 -> 16:38 = 4 мин),
+                // чтобы никогда не было расхождения на 1–2 минуты из-за скрытых секунд задержки или скрытой минуты ходьбы.
+                val waitSec = if (prevTransit != null && nextTransit != null) {
+                    val totalDisplayedMins =
+                        ((nextTransit.startTimeSec / 60) - (prevTransit.endTimeSec / 60)).coerceAtLeast(0)
+                    if (isPlatformChange) {
+                        totalDisplayedMins * 60
+                    } else {
+                        val walkMins = ((realWalkSec + 30) / 60).coerceAtLeast(1)
+                        (totalDisplayedMins - walkMins).coerceAtLeast(0) * 60
+                    }
+                } else if (nextTransit != null) {
+                    (nextTransit.startTimeSec - (leg.startTimeSec + realWalkSec)).coerceAtLeast(0)
                 } else {
                     0
                 }
-                result.add(TimelineDisplayItem.WalkOrWait(walkLeg = leg, waitSeconds = waitSec))
+                result.add(
+                    TimelineDisplayItem.WalkOrWait(
+                        walkLeg = leg,
+                        walkSeconds = realWalkSec,
+                        waitSeconds = waitSec,
+                        isPlatformChange = isPlatformChange,
+                        nextPlatformCode = nextTransit?.boardingStop?.platformCode.orEmpty()
+                    )
+                )
             }
 
             is JourneyLeg.TransitLeg -> {
                 val prevTransit = journey.legs.getOrNull(i - 1) as? JourneyLeg.TransitLeg
                 if (prevTransit != null) {
-                    // Пересадка на той же остановке — идти никуда не нужно, просто ждать
-                    val waitSec = (leg.startTimeSec - prevTransit.endTimeSec).coerceAtLeast(0)
-                    result.add(TimelineDisplayItem.WalkOrWait(walkLeg = null, waitSeconds = waitSec))
+                    // Пересадка на той же остановке — точная разница отображаемых минут
+                    val totalDisplayedMins =
+                        ((leg.startTimeSec / 60) - (prevTransit.endTimeSec / 60)).coerceAtLeast(0)
+                    result.add(
+                        TimelineDisplayItem.WalkOrWait(
+                            walkLeg = null,
+                            walkSeconds = 0,
+                            waitSeconds = totalDisplayedMins * 60
+                        )
+                    )
                 }
                 val color = parseHexColor(
                     RouteLegColors.hexForLeg(
@@ -223,8 +273,18 @@ fun RouteDetailsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val liveVehicles by viewModel.liveVehicles.collectAsStateWithLifecycle()
     val realtimeStatus by viewModel.realtimeStatus.collectAsStateWithLifecycle()
+    val trackedJourneyId by TripTrackingService.trackedJourneyId.collectAsStateWithLifecycle()
     val journey = state.journey
+    val context = LocalContext.current
     val s = LocalStrings.current
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && journey != null) {
+            TripTrackingService.start(context)
+        }
+    }
     var nowSec by remember {
         mutableIntStateOf(LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay())
     }
@@ -267,6 +327,35 @@ fun RouteDetailsScreen(
                     },
                     actions = {
                         if (journey != null) {
+                            val isTrackingThis = trackedJourneyId == journey.id
+                            IconButton(
+                                onClick = {
+                                    if (isTrackingThis) {
+                                        TripTrackingService.stop(context)
+                                    } else if (
+                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                        !OffDojadeNotifications.canPostNotifications(context)
+                                    ) {
+                                        notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    } else {
+                                        TripTrackingService.start(context)
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (isTrackingThis) {
+                                        Icons.Default.NotificationsActive
+                                    } else {
+                                        Icons.Default.NotificationsNone
+                                    },
+                                    contentDescription = null,
+                                    tint = if (isTrackingThis) {
+                                        LiveGreen
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
+                                )
+                            }
                             IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
                                 Icon(
                                     imageVector = if (isPanelExpanded) Icons.Default.ChevronRight else Icons.Default.ChevronLeft,
@@ -278,9 +367,14 @@ fun RouteDetailsScreen(
                 )
 
                 if (journey != null) {
+                    val liveTripIds = remember(liveVehicles) {
+                        liveVehicles.mapNotNull { it.tripId }.toSet()
+                    }
                     JourneyHeaderSummary(
                         journey = journey,
-                        referenceNowSec = nowSec
+                        referenceNowSec = nowSec,
+                        liveTripIds = liveTripIds,
+                        getTripDelaySec = viewModel::getTripDelaySeconds
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -316,9 +410,11 @@ fun RouteDetailsScreen(
             )
             val panelWidth = lerp(collapsedWidth, expandedWidth, expandFraction)
 
-            // 1. Полноэкранная карта MapLibre на заднем плане
+            // 1. Полноэкранная карта MapLibre на заднем плане (адаптируется под светлую/тёмную тему)
+            val isDarkMap = MaterialTheme.colorScheme.background.luminance() < 0.5f
             OfflineRouteMapView(
                 localMapFile = state.localMapFile,
+                isDarkTheme = isDarkMap,
                 journey = journey,
                 polylines = state.polylines,
                 outsidePolylines = state.outsidePolylines,
@@ -562,7 +658,9 @@ private fun VehicleInfoPopupCard(
 @Composable
 private fun JourneyHeaderSummary(
     journey: TransitJourney,
-    referenceNowSec: Int
+    referenceNowSec: Int,
+    liveTripIds: Set<String> = emptySet(),
+    getTripDelaySec: (String?) -> Int? = { null }
 ) {
     val s = LocalStrings.current
     val busDepSec = journey.transitDepartureTimeSec
@@ -570,8 +668,31 @@ private fun JourneyHeaderSummary(
     val deltaSec = busDepSec - referenceNowSec
     val deltaMins = if (isDeparted) ((-deltaSec) + 30) / 60 else deltaSec / 60
     val isOverHour = deltaMins > 60
-    val isDelayed = journey.transitLegs.any { it.delaySeconds >= 60 }
-    val hasRealtime = journey.transitLegs.any { it.delaySeconds != 0 }
+    val isDelayed = journey.transitLegs.any { leg ->
+        val d = getTripDelaySec(leg.tripId) ?: leg.delaySeconds
+        kotlin.math.abs(d) >= 60
+    }
+    val hasRealtime = journey.transitLegs.any { leg ->
+        leg.delaySeconds != 0 || leg.tripId in liveTripIds || getTripDelaySec(leg.tripId) != null
+    }
+    val isDepartingNow = !isDeparted && !isOverHour && deltaMins == 0
+    val countdownColor = if (isDepartingNow) {
+        val pulse = rememberInfiniteTransition(label = "headerDepartPulse")
+        val animated by pulse.animateColor(
+            initialValue = MaterialTheme.colorScheme.onSurface,
+            targetValue = OfflineGray,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "headerDepartPulseColor"
+        )
+        animated
+    } else if (isDeparted) {
+        OfflineGray
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
 
     Row(
         modifier = Modifier
@@ -581,13 +702,22 @@ private fun JourneyHeaderSummary(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Column(modifier = Modifier.width(96.dp)) {
-            Text(
-                text = if (isDeparted) s.departedLabel else if (isOverHour) s.onSchedule else s.departingCaption,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = if (isDeparted) s.departedLabel else if (isOverHour) s.onSchedule else s.departingCaption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (!isDeparted && hasRealtime) {
+                    AnimatedLiveSignal(isDelayed = isDelayed)
+                }
+            }
             Row(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(3.dp)
@@ -608,7 +738,7 @@ private fun JourneyHeaderSummary(
                         fontSize = 30.sp,
                         fontWeight = FontWeight.Bold,
                         lineHeight = 32.sp,
-                        color = if (isDeparted) OfflineGray else MaterialTheme.colorScheme.onSurface
+                        color = countdownColor
                     )
                     Text(
                         text = s.minShort,
@@ -616,12 +746,6 @@ private fun JourneyHeaderSummary(
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 3.dp)
-                    )
-                }
-                if (!isDeparted && hasRealtime) {
-                    AnimatedLiveSignal(
-                        isDelayed = isDelayed,
-                        modifier = Modifier.padding(bottom = 2.dp)
                     )
                 }
             }
@@ -643,7 +767,7 @@ private fun JourneyHeaderSummary(
                             isTram = leg.isTram
                         )
                     )
-                    val isLightAccent = legColor.luminance() > 0.6f
+                    val isNightLine = TransportMode.isNightLine(leg.routeShortName)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -651,19 +775,19 @@ private fun JourneyHeaderSummary(
                         Icon(
                             imageVector = if (leg.isTram) Icons.Default.Tram else Icons.Default.DirectionsBus,
                             contentDescription = null,
-                            tint = legColor,
+                            tint = if (isNightLine) NightBusWhite else legColor,
                             modifier = Modifier.size(18.dp)
                         )
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = if (isLightAccent) legColor else legColor.copy(alpha = 0.16f),
-                            border = BorderStroke(1.dp, legColor)
+                            color = if (isNightLine) NightBusWhite else legColor.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, if (isNightLine) NightBusWhite else legColor)
                         ) {
                             Text(
                                 text = leg.routeShortName,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isLightAccent) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
+                                color = if (isNightLine) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
@@ -727,6 +851,8 @@ private fun ExpandedTimelinePanel(
 ) {
     val expandedLegs = remember { mutableStateMapOf<Int, Boolean>() }
 
+    val totalTransitLegs = journey.transitLegs.size
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -738,7 +864,9 @@ private fun ExpandedTimelinePanel(
                 is TimelineDisplayItem.WalkOrWait -> JakdojadeWalkOrWaitRow(
                     item = item,
                     hasPrev = index > 0,
-                    hasNext = index < items.lastIndex
+                    hasNext = index < items.lastIndex,
+                    isBetweenTransitLegs = items.getOrNull(index - 1) is TimelineDisplayItem.Transit &&
+                        items.getOrNull(index + 1) is TimelineDisplayItem.Transit
                 )
                 is TimelineDisplayItem.Transit -> JakdojadeTransitLegBlock(
                     leg = item.leg,
@@ -746,14 +874,18 @@ private fun ExpandedTimelinePanel(
                     insight = legInsights[item.leg.tripId],
                     expanded = expandedLegs[index] == true,
                     onToggleExpand = { expandedLegs[index] = !(expandedLegs[index] == true) },
-                    nextWalkOrWait = nextWalk
+                    nextWalkOrWait = nextWalk,
+                    isFirstTransitLeg = item.legIndex == 0,
+                    isLastTransitLeg = item.legIndex == totalTransitLegs - 1
                 )
             }
         }
 
-        item(key = "ticket_card") {
-            Spacer(Modifier.height(14.dp))
-            TicketRecommendationCard(ticket = journey.ticketRecommendation)
+        if (!journey.ticketRecommendation.hasNonZtmPksLeg) {
+            item(key = "ticket_card") {
+                Spacer(Modifier.height(14.dp))
+                TicketRecommendationCard(ticket = journey.ticketRecommendation)
+            }
         }
     }
 }
@@ -814,13 +946,19 @@ private fun CollapsedTimelineRail(
                     val leg = item.leg
                     val accent = item.accentColor
                     val hasDelay = leg.delaySeconds >= 60
+                    val totalTransit = items.count { it is TimelineDisplayItem.Transit }
+                    val isFirstLeg = item.legIndex == 0
+                    val isLastLeg = item.legIndex == totalTransit - 1
+                    val neutralBg = MaterialTheme.colorScheme.surfaceVariant
+                    val neutralFg = MaterialTheme.colorScheme.onSurface
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         SmallTimePill(
                             text = TimeFormatUtils.formatClock(leg.boardingStop.scheduledTimeSec),
-                            bgColor = DeparturePillGreen,
+                            bgColor = if (isFirstLeg) DeparturePillGreen else neutralBg,
+                            textColor = if (isFirstLeg) Color.White else neutralFg,
                             strikethrough = hasDelay
                         )
                         if (hasDelay) {
@@ -855,7 +993,8 @@ private fun CollapsedTimelineRail(
 
                         SmallTimePill(
                             text = TimeFormatUtils.formatClock(leg.alightingStop.scheduledTimeSec),
-                            bgColor = ArrivalPillBlue,
+                            bgColor = if (isLastLeg) ArrivalPillBlue else neutralBg,
+                            textColor = if (isLastLeg) Color.White else neutralFg,
                             strikethrough = hasDelay
                         )
                         if (hasDelay) {
@@ -877,25 +1016,36 @@ private fun CollapsedTimelineRail(
 private fun JakdojadeWalkOrWaitRow(
     item: TimelineDisplayItem.WalkOrWait,
     hasPrev: Boolean,
-    hasNext: Boolean
+    hasNext: Boolean,
+    isBetweenTransitLegs: Boolean
 ) {
     val s = LocalStrings.current
     val walkLeg = item.walkLeg
     val needsWalk = walkLeg != null && walkLeg.distanceMeters > 15
-    val walkMins = if (needsWalk) ((walkLeg!!.durationSec + 30) / 60).coerceAtLeast(1) else 0
+    val walkMins = if (needsWalk) ((item.walkSeconds + 30) / 60).coerceAtLeast(1) else 0
     val waitMins = (item.waitSeconds + 30) / 60
 
     val titleText = when {
+        item.isPlatformChange && waitMins > 0 -> s.changePlatformAndWait(waitMins)
+        item.isPlatformChange -> s.changePlatformLabel
         !needsWalk && waitMins > 0 -> s.waitMinutes(waitMins)
         !needsWalk -> s.waitOnly
         waitMins > 0 -> s.walkAndWait(walkMins, waitMins)
         else -> s.walkMinutesOnly(walkMins)
     }
 
-    val subtitleText = if (needsWalk && walkLeg != null) {
-        "${walkLeg.distanceMeters} ${s.metersShort} • ${s.walkTo(walkLeg.toName)}"
-    } else {
-        s.transferSameStop
+    val subtitleText = when {
+        item.isPlatformChange && walkLeg != null -> {
+            val plat = if (item.nextPlatformCode.isNotBlank()) {
+                "${s.platformPrefix} ${item.nextPlatformCode}"
+            } else {
+                s.changePlatformLabel
+            }
+            "${walkLeg.distanceMeters} ${s.metersShort} • $plat"
+        }
+        needsWalk && walkLeg != null ->
+            "${walkLeg.distanceMeters} ${s.metersShort} • ${s.walkTo(walkLeg.toName)}"
+        else -> s.transferSameStop
     }
 
     val dotColor = if (needsWalk) {
@@ -947,7 +1097,8 @@ private fun JakdojadeWalkOrWaitRow(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(vertical = 8.dp)
+                .padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
                 text = titleText,
@@ -959,6 +1110,33 @@ private fun JakdojadeWalkOrWaitRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // Предупреждение о рискованно короткой пересадке (только между двумя сегментами транспорта, ожидание ≤ 2.5 мин)
+            val isTightTransfer = isBetweenTransitLegs && item.waitSeconds <= 150
+            if (isTightTransfer) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = DelayAmber.copy(alpha = 0.14f),
+                    border = BorderStroke(0.7.dp, DelayAmber.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = DelayAmber,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = s.tightTransferWarning,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DelayAmber
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -971,7 +1149,9 @@ private fun JakdojadeTransitLegBlock(
     insight: TransitLegInsight?,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
-    nextWalkOrWait: TimelineDisplayItem.WalkOrWait? = null
+    nextWalkOrWait: TimelineDisplayItem.WalkOrWait? = null,
+    isFirstTransitLeg: Boolean = true,
+    isLastTransitLeg: Boolean = true
 ) {
     val s = LocalStrings.current
     val delayMins = leg.delaySeconds / 60
@@ -983,6 +1163,9 @@ private fun JakdojadeTransitLegBlock(
     }
 
     val isLightAccent = accent.luminance() > 0.6f
+    val isNightLine = TransportMode.isNightLine(leg.routeShortName)
+    val neutralPillBg = MaterialTheme.colorScheme.surfaceVariant
+    val neutralPillFg = MaterialTheme.colorScheme.onSurface
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
@@ -1008,7 +1191,8 @@ private fun JakdojadeTransitLegBlock(
             ) {
                 SmallTimePill(
                     text = TimeFormatUtils.formatClock(leg.boardingStop.scheduledTimeSec),
-                    bgColor = DeparturePillGreen,
+                    bgColor = if (isFirstTransitLeg) DeparturePillGreen else neutralPillBg,
+                    textColor = if (isFirstTransitLeg) Color.White else neutralPillFg,
                     strikethrough = hasDelay
                 )
                 if (hasDelay) {
@@ -1113,14 +1297,14 @@ private fun JakdojadeTransitLegBlock(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(7.dp),
-                            color = if (isLightAccent) accent else accent.copy(alpha = 0.16f),
-                            border = BorderStroke(1.dp, accent)
+                            color = if (isNightLine) NightBusWhite else accent.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, if (isNightLine) NightBusWhite else accent)
                         ) {
                             Text(
                                 text = leg.routeShortName,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isLightAccent) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
+                                color = if (isNightLine) NightBusOnWhite else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp)
                             )
                         }
@@ -1328,7 +1512,8 @@ private fun JakdojadeTransitLegBlock(
             ) {
                 SmallTimePill(
                     text = TimeFormatUtils.formatClock(leg.alightingStop.scheduledTimeSec),
-                    bgColor = ArrivalPillBlue,
+                    bgColor = if (isLastTransitLeg) ArrivalPillBlue else neutralPillBg,
+                    textColor = if (isLastTransitLeg) Color.White else neutralPillFg,
                     strikethrough = hasDelay
                 )
                 if (hasDelay) {
@@ -1527,6 +1712,7 @@ private fun StopInfoPopupCard(
 private fun SmallTimePill(
     text: String,
     bgColor: Color,
+    textColor: Color = Color.White,
     strikethrough: Boolean = false
 ) {
     Surface(
@@ -1538,7 +1724,7 @@ private fun SmallTimePill(
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             textDecoration = if (strikethrough) TextDecoration.LineThrough else TextDecoration.None,
-            color = Color.White,
+            color = textColor,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
         )
     }
@@ -1547,6 +1733,7 @@ private fun SmallTimePill(
 @Composable
 private fun OfflineRouteMapView(
     localMapFile: File?,
+    isDarkTheme: Boolean,
     journey: TransitJourney,
     polylines: List<RouteShapePolyline>,
     outsidePolylines: List<RouteShapePolyline>,
@@ -1586,8 +1773,8 @@ private fun OfflineRouteMapView(
         }
     }
 
-    val styleJson = remember(localMapFile?.absolutePath) {
-        buildOfflineMapStyleJson(localMapFile)
+    val styleJson = remember(localMapFile?.absolutePath, isDarkTheme) {
+        OfflineMapStyleHelper.buildOfflineMapStyleJson(localMapFile, isDarkTheme)
     }
     var appliedStyleJson by remember { mutableStateOf<String?>(null) }
     var clickListenerAttached by remember { mutableStateOf(false) }
@@ -1630,7 +1817,7 @@ private fun OfflineRouteMapView(
                             )
                             return@addOnMapClickListener true
                         }
-                        val stopHit = map.queryRenderedFeatures(hitBox, LAYER_ROUTE_STOPS).firstOrNull()
+                        val stopHit = map.queryRenderedFeatures(hitBox, LAYER_ROUTE_ENDPOINTS, LAYER_ROUTE_STOPS).firstOrNull()
                         if (stopHit != null) {
                             val stopName = stopHit.getStringProperty("name") ?: ""
                             if (stopName.isNotBlank()) {
@@ -1657,6 +1844,7 @@ private fun OfflineRouteMapView(
                 if (currentStyle == null || !currentStyle.isFullyLoaded || appliedStyleJson != styleJson) {
                     appliedStyleJson = styleJson
                     map.setStyle(Style.Builder().fromJson(styleJson)) { loadedStyle ->
+                        OfflineMapStyleHelper.addPoznanLandmarksLayer(loadedStyle, isDarkTheme)
                         renderRouteOverlay(
                             style = loadedStyle,
                             journey = journey,
@@ -1772,15 +1960,20 @@ private fun renderRouteOverlay(
         )
     }
 
-    // 4. Точки остановок маршрута (обводка цветом сегмента + метаданные для клика по остановке)
-    val stopFeatures = journey.transitLegs.flatMapIndexed { legIdx, leg ->
+    // 4. Точки остановок маршрута:
+    // - конечные/пересадочные остановки (LAYER_ROUTE_ENDPOINTS) видны на любом зуме;
+    // - промежуточные остановки (LAYER_ROUTE_STOPS) появляются только при приближении (minZoom = 13.2f),
+    //   чтобы при отдалении не сливаться в сплошную гусеницу!
+    val endpointStopFeatures = ArrayList<Feature>()
+    val midStopFeatures = ArrayList<Feature>()
+    journey.transitLegs.forEachIndexed { legIdx, leg ->
         val colorHex = RouteLegColors.hexForLeg(
             transitLegIndex = legIdx,
             shortName = leg.routeShortName,
             isTram = leg.isTram
         )
-        leg.stops.map { stop ->
-            Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
+        leg.stops.forEachIndexed { sIdx, stop ->
+            val feat = Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
                 addStringProperty("color", colorHex)
                 addStringProperty("name", stop.stopName)
                 addStringProperty("time", TimeFormatUtils.formatClock(stop.effectiveTimeSec))
@@ -1788,46 +1981,110 @@ private fun renderRouteOverlay(
                 addStringProperty("zone", stop.zoneId)
                 addBooleanProperty("isOnDemand", stop.isOnDemand)
             }
+            if (sIdx == 0 || sIdx == leg.stops.lastIndex) {
+                endpointStopFeatures.add(feat)
+            } else {
+                midStopFeatures.add(feat)
+            }
         }
     }
-    val stopCollection = FeatureCollection.fromFeatures(stopFeatures)
+    val midStopCollection = FeatureCollection.fromFeatures(midStopFeatures)
     val existingStopSource = style.getSourceAs<GeoJsonSource>(SOURCE_ROUTE_STOPS)
     if (existingStopSource != null) {
-        existingStopSource.setGeoJson(stopCollection)
+        existingStopSource.setGeoJson(midStopCollection)
     } else {
-        style.addSource(GeoJsonSource(SOURCE_ROUTE_STOPS, stopCollection))
+        style.addSource(GeoJsonSource(SOURCE_ROUTE_STOPS, midStopCollection))
         style.addLayer(
-            CircleLayer(LAYER_ROUTE_STOPS, SOURCE_ROUTE_STOPS).withProperties(
-                PropertyFactory.circleRadius(5.5f),
+            CircleLayer(LAYER_ROUTE_STOPS, SOURCE_ROUTE_STOPS)
+                .withProperties(
+                    PropertyFactory.circleRadius(5.0f),
+                    PropertyFactory.circleColor("#FFFFFF"),
+                    PropertyFactory.circleStrokeColor(Expression.get("color")),
+                    PropertyFactory.circleStrokeWidth(2.5f)
+                ).apply { minZoom = 13.2f }
+        )
+    }
+    val endpointCollection = FeatureCollection.fromFeatures(endpointStopFeatures)
+    val existingEndpointSource = style.getSourceAs<GeoJsonSource>(SOURCE_ROUTE_ENDPOINTS)
+    if (existingEndpointSource != null) {
+        existingEndpointSource.setGeoJson(endpointCollection)
+    } else {
+        style.addSource(GeoJsonSource(SOURCE_ROUTE_ENDPOINTS, endpointCollection))
+        style.addLayer(
+            CircleLayer(LAYER_ROUTE_ENDPOINTS, SOURCE_ROUTE_ENDPOINTS).withProperties(
+                PropertyFactory.circleRadius(6.5f),
                 PropertyFactory.circleColor("#FFFFFF"),
                 PropertyFactory.circleStrokeColor(Expression.get("color")),
-                PropertyFactory.circleStrokeWidth(2.8f)
+                PropertyFactory.circleStrokeWidth(3.2f)
             )
         )
     }
 
-    // 5. Живые маркеры транспорта — показываем ТОЛЬКО транспорт, едущий по текущей трассе
-    val legIndexByTripId = journey.transitLegs.withIndex().associate { (idx, leg) -> leg.tripId to idx }
-    val legByTripId = journey.transitLegs.associateBy { it.tripId }
-    val matchingVehicles = liveVehicles.filter { it.tripId in relevantTripIds }
+    // 5. Живые маркеры транспорта (автобусы и трамваи) — СТРОГО по 1 конкретному транспорту на сегмент:
+    // 1) Точное совпадение по trip_id;
+    // 2) Совпадение по core trip_id (после `_`, на случай отличия префикса service_id);
+    // 3) Если рейс едет сейчас / в ближайшие 25 мин — ОДИН ближайший транспорт этой линии,
+    //    идущий в том же направлении (проверка азимута ±100°) в радиусе 2 км от остановки посадки.
+    val nowSecOfDay = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
+    val matchedPairs = ArrayList<Pair<LiveVehicle, Pair<Int, JourneyLeg.TransitLeg>>>()
+    val usedVehicleIds = HashSet<String>()
+    journey.transitLegs.forEachIndexed { idx, leg ->
+        val legCore = leg.tripId.substringAfter('_', "")
+        val matched = liveVehicles.firstOrNull { it.tripId == leg.tripId && it.vehicleId !in usedVehicleIds }
+            ?: (if (legCore.isNotEmpty()) {
+                liveVehicles.firstOrNull {
+                    it.vehicleId !in usedVehicleIds &&
+                        it.tripId?.substringAfter('_', "") == legCore
+                }
+            } else {
+                null
+            })
+            ?: run {
+                val depDeltaSec = (leg.boardingStop.effectiveTimeSec % 86_400) - nowSecOfDay
+                if (depDeltaSec !in -900..1_500) return@run null
+                val lineNorm = leg.routeShortName.trim().uppercase()
+                val nextStop = leg.stops.getOrNull(1) ?: leg.alightingStop
+                val legBearingDeg = computeBearingDegrees(
+                    leg.boardingStop.latitude, leg.boardingStop.longitude,
+                    nextStop.latitude, nextStop.longitude
+                )
+                val sameLine = liveVehicles
+                    .filter { v ->
+                        v.vehicleId !in usedVehicleIds &&
+                            (v.routeId?.trim()?.uppercase() == lineNorm ||
+                                v.label.substringBefore('/').trim().uppercase() == lineNorm)
+                    }
+                    .map { v ->
+                        val dist = GeoUtils.haversineMeters(
+                            v.latitude, v.longitude,
+                            leg.boardingStop.latitude, leg.boardingStop.longitude
+                        )
+                        val vBearing = v.bearing
+                        val aligned = vBearing == null || vBearing <= 0f ||
+                            angularDiffDegrees(vBearing.toDouble(), legBearingDeg) <= 100.0
+                        Triple(v, dist, aligned)
+                    }
+                    .filter { (_, dist, aligned) -> dist <= 2_000.0 && aligned }
+                    .minByOrNull { (_, dist, _) -> dist }
+                sameLine?.first
+            }
 
-    val vehicleFeatures = matchingVehicles.map { v ->
-        val leg = legByTripId[v.tripId]
-        val legIdx = legIndexByTripId[v.tripId]
-        val label = leg?.routeShortName ?: v.routeId?.take(4)?.ifBlank { "ZTM" } ?: "ZTM"
-        val isTram = leg?.isTram ?: (label.toIntOrNull()?.let { it in 0..99 || it in 201..202 } ?: false)
-        val colorHex = if (legIdx != null && leg != null) {
-            RouteLegColors.hexForLeg(
-                transitLegIndex = legIdx,
-                shortName = leg.routeShortName,
-                isTram = leg.isTram
-            )
-        } else if (!isTram && TransportMode.isNightLine(label)) {
-            RouteLegColors.NIGHT_BUS_HEX
-        } else {
-            if (isTram) "#3FA372" else "#4B83C3"
+        if (matched != null) {
+            usedVehicleIds.add(matched.vehicleId)
+            matchedPairs.add(matched to (idx to leg))
         }
-        val delaySec = getTripDelaySec(v.tripId) ?: leg?.delaySeconds ?: 0
+    }
+
+    val vehicleFeatures = matchedPairs.map { (v, legPair) ->
+        val (legIdx, leg) = legPair
+        val label = leg.routeShortName
+        val isTram = leg.isTram
+        val colorHex = RouteLegColors.hexForLeg(
+            transitLegIndex = legIdx,
+            shortName = leg.routeShortName,
+            isTram = leg.isTram
+        )
+        val delaySec = getTripDelaySec(v.tripId) ?: getTripDelaySec(leg.tripId) ?: leg.delaySeconds
         val updatedMs = v.timestampEpochSec?.takeIf { it > 0L }?.let { it * 1000L } ?: fallbackFeedUpdatedMs
 
         val iconId = "veh_circle_${if (isTram) "t" else "b"}_${colorHex.removePrefix("#")}_$label"
@@ -1973,202 +2230,19 @@ private fun fitCameraToJourney(
     }
 }
 
-/**
- * Чистый, контрастный стиль векторной карты для локального `poznan.pmtiles` (Protomaps v4).
- * Разделяет дороги по иерархии (автомагистрали, главные улицы, локальные улицы, тропинки)
- * с плавным масштабированием ширины от зума и скруглёнными перекрёстками.
- */
-private fun buildOfflineMapStyleJson(localMapFile: File?): String {
-    if (localMapFile != null && localMapFile.exists()) {
-        val uri = "pmtiles://file://${localMapFile.absolutePath}"
-        return """
-            {
-              "version": 8,
-              "name": "Poznan Offline Clean Dark",
-              "sources": {
-                "poznan": {
-                  "type": "vector",
-                  "url": "$uri"
-                }
-              },
-              "layers": [
-                {
-                  "id": "background",
-                  "type": "background",
-                  "paint": { "background-color": "#0D1522" }
-                },
-                {
-                  "id": "pm-earth",
-                  "type": "fill",
-                  "source": "poznan",
-                  "source-layer": "earth",
-                  "paint": { "fill-color": "#111A2B" }
-                },
-                {
-                  "id": "pm-parks",
-                  "type": "fill",
-                  "source": "poznan",
-                  "source-layer": "landuse",
-                  "filter": ["in", "kind", "park", "forest", "wood", "grass", "meadow", "cemetery", "recreation_ground", "garden", "nature_reserve", "scrub"],
-                  "paint": { "fill-color": "#132B24", "fill-opacity": 0.85 }
-                },
-                {
-                  "id": "pm-water",
-                  "type": "fill",
-                  "source": "poznan",
-                  "source-layer": "water",
-                  "filter": ["==", ["geometry-type"], "Polygon"],
-                  "paint": { "fill-color": "#173F6B" }
-                },
-                {
-                  "id": "pm-water-lines",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "water",
-                  "filter": ["==", ["geometry-type"], "LineString"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#173F6B",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.0, 14, 2.5, 16, 4.5]
-                  }
-                },
-                {
-                  "id": "pm-buildings",
-                  "type": "fill",
-                  "source": "poznan",
-                  "source-layer": "buildings",
-                  "minzoom": 13,
-                  "paint": {
-                    "fill-color": "#1C293D",
-                    "fill-outline-color": "#273750",
-                    "fill-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0.35, 15, 0.85]
-                  }
-                },
-                {
-                  "id": "pm-rail",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 12,
-                  "filter": ["==", "kind", "rail"],
-                  "paint": {
-                    "line-color": "#283548",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.8, 15, 1.6],
-                    "line-opacity": 0.65
-                  }
-                },
-                {
-                  "id": "pm-paths",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 15,
-                  "filter": ["in", "kind", "path", "other"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#2B3A50",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 15, 1.0, 17, 2.2],
-                    "line-dasharray": [2, 2],
-                    "line-opacity": 0.55
-                  }
-                },
-                {
-                  "id": "pm-minor-casing",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 12,
-                  "filter": ["==", "kind", "minor_road"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#0A101B",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 1.8, 14, 4.8, 16, 11.0]
-                  }
-                },
-                {
-                  "id": "pm-minor-fill",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 12,
-                  "filter": ["==", "kind", "minor_road"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#33445E",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 1.0, 14, 3.2, 16, 8.2]
-                  }
-                },
-                {
-                  "id": "pm-major-casing",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 9,
-                  "filter": ["==", "kind", "major_road"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#090F1A",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 10, 2.6, 13, 6.2, 16, 15.0]
-                  }
-                },
-                {
-                  "id": "pm-major-fill",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 9,
-                  "filter": ["==", "kind", "major_road"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#526787",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 10, 1.5, 13, 4.4, 16, 12.0]
-                  }
-                },
-                {
-                  "id": "pm-highway-casing",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 7,
-                  "filter": ["==", "kind", "highway"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#090F1A",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 9, 3.2, 13, 8.0, 16, 18.0]
-                  }
-                },
-                {
-                  "id": "pm-highway-fill",
-                  "type": "line",
-                  "source": "poznan",
-                  "source-layer": "roads",
-                  "minzoom": 7,
-                  "filter": ["==", "kind", "highway"],
-                  "layout": { "line-cap": "round", "line-join": "round" },
-                  "paint": {
-                    "line-color": "#6E85A8",
-                    "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 9, 2.0, 13, 6.0, 16, 14.5]
-                  }
-                }
-              ]
-            }
-        """.trimIndent()
-    }
+private fun computeBearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val phi1 = Math.toRadians(lat1)
+    val phi2 = Math.toRadians(lat2)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val y = kotlin.math.sin(dLon) * kotlin.math.cos(phi2)
+    val x = kotlin.math.cos(phi1) * kotlin.math.sin(phi2) -
+        kotlin.math.sin(phi1) * kotlin.math.cos(phi2) * kotlin.math.cos(dLon)
+    return (Math.toDegrees(kotlin.math.atan2(y, x)) + 360.0) % 360.0
+}
 
-    return """
-        {
-          "version": 8,
-          "name": "OffDojade Fallback Style",
-          "sources": {},
-          "layers": [
-            {
-              "id": "background",
-              "type": "background",
-              "paint": { "background-color": "#0D1522" }
-            }
-          ]
-        }
-    """.trimIndent()
+private fun angularDiffDegrees(a: Double, b: Double): Double {
+    val diff = kotlin.math.abs(a - b) % 360.0
+    return if (diff > 180.0) 360.0 - diff else diff
 }
 
 private const val SOURCE_ROUTE_OUTSIDE = "offdojade-route-outside-source"
@@ -2179,5 +2253,7 @@ private const val SOURCE_WALK_LINES = "offdojade-walk-lines-source"
 private const val LAYER_WALK_LINES = "offdojade-walk-lines-layer"
 private const val SOURCE_ROUTE_STOPS = "offdojade-route-stops-source"
 private const val LAYER_ROUTE_STOPS = "offdojade-route-stops-layer"
+private const val SOURCE_ROUTE_ENDPOINTS = "offdojade-route-endpoints-source"
+private const val LAYER_ROUTE_ENDPOINTS = "offdojade-route-endpoints-layer"
 private const val SOURCE_LIVE_VEHICLES = "offdojade-live-vehicles-source"
 private const val LAYER_LIVE_VEHICLES = "offdojade-live-vehicles-layer"

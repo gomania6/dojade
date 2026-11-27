@@ -34,5 +34,5 @@ jobs:
           else
             gh release create "$TAG" dist/poznan_schedule.db.gz dist/version.json \
               --title "ZTM Poznań Prebuilt Schedule (Auto-updated)" \
-              --notes "Ежедневно обновляемая SQLite-база расписания ZTM Poznań для OffDojade."
+              --notes "Ежедневно обновляемая SQLite-база расписания ZTM Poznań для PyrTransit."
           fi

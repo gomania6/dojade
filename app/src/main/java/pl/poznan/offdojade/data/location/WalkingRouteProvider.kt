@@ -9,9 +9,15 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
+data class WalkingRouteResult(
+    val points: List<Pair<Double, Double>>,
+    val distanceMeters: Int?
+)
+
 /**
  * Строит пешие маршруты по реальным дорогам и тротуарам через OSRM Foot Routing API
- * (OpenStreetMap). При отсутствии интернета или таймауте мгновенно возвращает прямую линию.
+ * (OpenStreetMap) и возвращает реальную длину пешего пути в метрах.
+ * При отсутствии интернета или таймауте мгновенно возвращает прямую линию.
  */
 class WalkingRouteProvider(
     baseHttpClient: OkHttpClient
@@ -22,15 +28,25 @@ class WalkingRouteProvider(
         .callTimeout(3500, TimeUnit.MILLISECONDS)
         .build()
 
-    private val cache = ConcurrentHashMap<String, List<Pair<Double, Double>>>()
+    private val cache = ConcurrentHashMap<String, WalkingRouteResult>()
 
     suspend fun getWalkingPolyline(
         fromLat: Double,
         fromLon: Double,
         toLat: Double,
         toLon: Double
-    ): List<Pair<Double, Double>> = withContext(Dispatchers.IO) {
-        val fallback = listOf(fromLat to fromLon, toLat to toLon)
+    ): List<Pair<Double, Double>> = getWalkingRoute(fromLat, fromLon, toLat, toLon).points
+
+    suspend fun getWalkingRoute(
+        fromLat: Double,
+        fromLon: Double,
+        toLat: Double,
+        toLon: Double
+    ): WalkingRouteResult = withContext(Dispatchers.IO) {
+        val fallback = WalkingRouteResult(
+            points = listOf(fromLat to fromLon, toLat to toLon),
+            distanceMeters = null
+        )
         val cacheKey = String.format(
             Locale.US,
             "%.5f,%.5f->%.5f,%.5f",
@@ -47,7 +63,7 @@ class WalkingRouteProvider(
         val routed = runCatching {
             val req = Request.Builder()
                 .url(url)
-                .header("User-Agent", "OffDojade-Poznan/1.0")
+                .header("User-Agent", "PyrTransit-Poznan/1.0")
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@runCatching null
@@ -55,7 +71,9 @@ class WalkingRouteProvider(
                 val root = JSONObject(body)
                 val routes = root.optJSONArray("routes") ?: return@runCatching null
                 if (routes.length() == 0) return@runCatching null
-                val geometry = routes.getJSONObject(0).optJSONObject("geometry") ?: return@runCatching null
+                val route0 = routes.getJSONObject(0)
+                val osrmDist = route0.optDouble("distance", -1.0)
+                val geometry = route0.optJSONObject("geometry") ?: return@runCatching null
                 val coords = geometry.optJSONArray("coordinates") ?: return@runCatching null
                 if (coords.length() < 2) return@runCatching null
 
@@ -66,11 +84,14 @@ class WalkingRouteProvider(
                     val lat = pair.getDouble(1)
                     points.add(lat to lon)
                 }
-                points
+                WalkingRouteResult(
+                    points = points,
+                    distanceMeters = if (osrmDist > 0.0) osrmDist.toInt() else null
+                )
             }
         }.getOrNull()
 
-        if (routed != null && routed.size >= 2) {
+        if (routed != null && routed.points.size >= 2) {
             if (cache.size > 200) cache.clear()
             cache[cacheKey] = routed
             routed

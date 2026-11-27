@@ -15,6 +15,7 @@ import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.gtfs.GtfsImporter
 import pl.poznan.offdojade.data.gtfs.PrebuiltDbDownloader
 import pl.poznan.offdojade.data.local.PreferencesRepository
+import pl.poznan.offdojade.data.notifications.OffDojadeNotifications
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +35,7 @@ class GtfsSyncWorker(
     private val transitGraphRepository: TransitGraphRepository by inject()
 
     override suspend fun doWork(): Result {
+        OffDojadeNotifications.showBackgroundSyncNotification(applicationContext)
         return try {
             // 1. Приоритет: быстрый предсобранный SQLite из GitHub Actions (version.json + poznan_schedule.db.gz)
             if (AppConfig.isPrebuiltScheduleConfigured()) {
@@ -64,6 +66,8 @@ class GtfsSyncWorker(
             Result.success()
         } catch (_: Exception) {
             Result.retry()
+        } finally {
+            OffDojadeNotifications.cancelBackgroundSyncNotification(applicationContext)
         }
     }
 

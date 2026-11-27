@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import pl.poznan.offdojade.data.gtfs.GeoUtils
 import pl.poznan.offdojade.data.location.WalkingRouteProvider
 import pl.poznan.offdojade.data.map.MapDownloader
 import pl.poznan.offdojade.data.realtime.LiveVehicle
@@ -20,6 +21,7 @@ import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TransportMode
+import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.ShapeSlicer
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
 import pl.poznan.offdojade.domain.routing.TransitLegInsight
@@ -44,12 +46,7 @@ object RouteLegColors {
         transitLegIndex: Int,
         shortName: String = "",
         isTram: Boolean = false
-    ): String {
-        if (!isTram && shortName.isNotBlank() && TransportMode.isNightLine(shortName)) {
-            return NIGHT_BUS_HEX
-        }
-        return HEX_PALETTE[transitLegIndex.coerceAtLeast(0) % HEX_PALETTE.size]
-    }
+    ): String = HEX_PALETTE[transitLegIndex.coerceAtLeast(0) % HEX_PALETTE.size]
 }
 
 data class RouteShapePolyline(
@@ -90,11 +87,67 @@ class RouteDetailsViewModel(
 
     fun getTripDelaySeconds(tripId: String?): Int? {
         if (tripId.isNullOrBlank()) return null
-        return realtimeRepository.tripDelaysSec[tripId]
+        realtimeRepository.tripDelaysSec[tripId]?.let { return it }
+        val core = tripId.substringAfter('_', "")
+        if (core.isNotEmpty()) {
+            realtimeRepository.tripDelaysSec.entries
+                .firstOrNull { it.key.substringAfter('_', "") == core }
+                ?.let { return it.value }
+        }
+        return null
     }
 
     init {
         loadSelectedJourney()
+        // Сразу при входе в детали поездки обновляем живые опоздания GTFS-RT,
+        // а затем автоматически подтягиваем свежие задержки на каждый цикл опроса
+        viewModelScope.launch {
+            runCatching { realtimeRepository.refreshOnce() }
+        }
+        viewModelScope.launch {
+            realtimeRepository.status.collect {
+                applyLiveDelaysToCurrentJourney()
+            }
+        }
+    }
+
+    private fun applyLiveDelaysToCurrentJourney() {
+        _uiState.update { state ->
+            val current = state.journey ?: return@update state
+            var changed = false
+            val updatedLegs = current.legs.map { leg ->
+                if (leg is JourneyLeg.TransitLeg) {
+                    val liveDelay = getTripDelaySeconds(leg.tripId)
+                    if (liveDelay != null && liveDelay != leg.delaySeconds) {
+                        changed = true
+                        val updatedStops = leg.stops.map { stop ->
+                            stop.copy(effectiveTimeSec = stop.scheduledTimeSec + liveDelay)
+                        }
+                        val firstStop = updatedStops.firstOrNull() ?: leg.boardingStop
+                        val lastStop = updatedStops.lastOrNull() ?: leg.alightingStop
+                        leg.copy(
+                            delaySeconds = liveDelay,
+                            startTimeSec = firstStop.effectiveTimeSec,
+                            endTimeSec = lastStop.effectiveTimeSec,
+                            stops = updatedStops
+                        )
+                    } else {
+                        leg
+                    }
+                } else {
+                    leg
+                }
+            }
+            if (!changed) return@update state
+            val firstLeg = updatedLegs.firstOrNull()
+            val lastLeg = updatedLegs.lastOrNull()
+            val updatedJourney = current.copy(
+                legs = updatedLegs,
+                departureTimeSec = firstLeg?.startTimeSec ?: current.departureTimeSec,
+                arrivalTimeSec = lastLeg?.endTimeSec ?: current.arrivalTimeSec
+            )
+            state.copy(journey = updatedJourney)
+        }
     }
 
     private fun loadSelectedJourney() {
@@ -187,27 +240,87 @@ class RouteDetailsViewModel(
                 )
             }
 
-            // Параллельно достраиваем пешие участки по реальным дорогам/тротуарам (OSRM),
-            // с мгновенным сохранением прямой линии, если телефон офлайн
-            val walkLegs = journey?.legs
-                ?.filterIsInstance<JourneyLeg.WalkLeg>()
-                ?.filter { it.distanceMeters > 15 }
+            // Параллельно достраиваем пешие участки по реальным дорогам/тротуарам (OSRM)
+            // и обновляем реальную дистанцию в метрах и время ходьбы на таймлайне.
+            // Для смены платформы на одной остановке (например, Górczyn PKM) и коротких переходов ≤ 120 м
+            // НЕ отправляем в OSRM, чтобы он не притягивал точку к эстакаде/мосту с крюком на 600+ м.
+            val currentJourney = _uiState.value.journey
+            val indexedWalkLegs = currentJourney?.legs
+                ?.mapIndexedNotNull { idx, leg ->
+                    if (leg is JourneyLeg.WalkLeg && leg.distanceMeters > 15) idx to leg else null
+                }
                 .orEmpty()
-            if (walkLegs.isNotEmpty()) {
-                val routedWalks = coroutineScope {
-                    walkLegs.map { leg ->
+            if (indexedWalkLegs.isNotEmpty() && currentJourney != null) {
+                val routedResults = coroutineScope {
+                    indexedWalkLegs.map { (legIdx, leg) ->
                         async {
-                            walkingRouteProvider.getWalkingPolyline(
-                                fromLat = leg.fromLat,
-                                fromLon = leg.fromLon,
-                                toLat = leg.toLat,
-                                toLon = leg.toLon
+                            val sameStopPlatformChange =
+                                RaptorData.normalizeStopName(leg.fromName) == RaptorData.normalizeStopName(leg.toName)
+                            val straightDist = GeoUtils.haversineMeters(
+                                leg.fromLat, leg.fromLon,
+                                leg.toLat, leg.toLon
                             )
+                            val directFallback = pl.poznan.offdojade.data.location.WalkingRouteResult(
+                                points = listOf(leg.fromLat to leg.fromLon, leg.toLat to leg.toLon),
+                                distanceMeters = straightDist.toInt().coerceAtLeast(1)
+                            )
+                            if (sameStopPlatformChange || straightDist <= 120.0) {
+                                legIdx to directFallback
+                            } else {
+                                val osrm = walkingRouteProvider.getWalkingRoute(
+                                    fromLat = leg.fromLat,
+                                    fromLon = leg.fromLon,
+                                    toLat = leg.toLat,
+                                    toLon = leg.toLon
+                                )
+                                // Защита от ошибочной привязки OSRM к мосту/виадуку:
+                                // если OSRM дал крюк > 2.5× + 150 м от прямой — откатываемся на прямую с коэф. 1.25
+                                val osrmDist = osrm.distanceMeters
+                                if (osrmDist != null && osrmDist > (straightDist * 2.5 + 150.0)) {
+                                    legIdx to directFallback.copy(
+                                        distanceMeters = (straightDist * 1.25).toInt().coerceAtLeast(1)
+                                    )
+                                } else {
+                                    legIdx to osrm
+                                }
+                            }
                         }
                     }.awaitAll()
                 }
-                _uiState.update { it.copy(walkPolylines = routedWalks) }
+                val routedByLegIdx = routedResults.toMap()
+                _uiState.update { state ->
+                    val j = state.journey ?: return@update state
+                    val newLegs = j.legs.mapIndexed { idx, leg ->
+                        val res = routedByLegIdx[idx]
+                        if (leg is JourneyLeg.WalkLeg && res != null) {
+                            val realDist = res.distanceMeters
+                                ?: (leg.distanceMeters * 1.25).toInt()
+                            val realWalkSec = GeoUtils.walkingTimeSeconds(realDist.toDouble())
+                            when {
+                                idx == 0 -> leg.copy(
+                                    distanceMeters = realDist,
+                                    startTimeSec = leg.endTimeSec - realWalkSec
+                                )
+                                else -> leg.copy(
+                                    distanceMeters = realDist,
+                                    endTimeSec = leg.startTimeSec + realWalkSec
+                                )
+                            }
+                        } else {
+                            leg
+                        }
+                    }
+                    state.copy(
+                        journey = j.copy(
+                            legs = newLegs,
+                            departureTimeSec = newLegs.firstOrNull()?.startTimeSec ?: j.departureTimeSec,
+                            arrivalTimeSec = newLegs.lastOrNull()?.endTimeSec ?: j.arrivalTimeSec
+                        ),
+                        walkPolylines = routedResults.map { it.second.points }
+                    )
+                }
             }
+            applyLiveDelaysToCurrentJourney()
         }
     }
 }

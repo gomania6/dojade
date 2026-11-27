@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import pl.poznan.offdojade.data.local.entity.RouteEntity
+import pl.poznan.offdojade.data.map.MapDownloader
+import java.io.File
 import pl.poznan.offdojade.domain.model.TransportMode
 import pl.poznan.offdojade.domain.routing.StaticDirectionTimetable
 import pl.poznan.offdojade.domain.routing.StaticStopTimetable
@@ -55,8 +57,12 @@ data class TimetablesUiState(
 }
 
 class TimetablesViewModel(
-    private val transitGraphRepository: TransitGraphRepository
+    private val transitGraphRepository: TransitGraphRepository,
+    private val mapDownloader: MapDownloader
 ) : ViewModel() {
+
+    fun getLocalMapFile(): File? =
+        mapDownloader.getLocalMapFile().takeIf { it.exists() && it.length() > 0L }
 
     private val _uiState = MutableStateFlow(TimetablesUiState())
     val uiState: StateFlow<TimetablesUiState> = _uiState.asStateFlow()

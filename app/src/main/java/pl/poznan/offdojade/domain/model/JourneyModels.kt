@@ -37,7 +37,9 @@ data class TicketRecommendation(
     val isUlgowy: Boolean = false,
     val recommendedTimeTicketPricePln: Double = recommendedTimeTicket.priceFor(isUlgowy),
     /** Группы остановок для PEKA tPortmonetka (разделяются, если пересадка > 20 мин) */
-    val pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList()
+    val pekaStopGroups: List<Int> = if (totalStopsPassed > 0) listOf(totalStopsPassed) else emptyList(),
+    /** true, если маршрут содержит линии PKS (тариф ZTM не применяется — цену скрываем) */
+    val hasNonZtmPksLeg: Boolean = false
 ) {
     val zonesBadgeText: String
         get() = if (zones.isEmpty()) "Зона: A" else "Зоны: ${zones.joinToString(" + ")}"

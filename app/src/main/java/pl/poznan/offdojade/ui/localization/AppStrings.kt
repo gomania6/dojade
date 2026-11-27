@@ -185,6 +185,12 @@ data class AppStrings(
     val todayLabel: String,
     val tomorrowLabel: String,
     val dayAfterTomorrowLabel: String,
+    val tightTransferWarning: String,
+    val offlineNoticeBanner: String,
+    val pickOnMapLabel: String,
+    val pickThisLocation: String,
+    val stopsListTab: String,
+    val stopsMapTab: String,
     val clearHistory: String,
 
     // Ulgowy ticket
@@ -214,6 +220,8 @@ data class AppStrings(
     val walkAndWait: (Int, Int) -> String,
     val walkMinutesOnly: (Int) -> String,
     val transferSameStop: String,
+    val changePlatformLabel: String,
+    val changePlatformAndWait: (Int) -> String,
     val updatedMinSecAgo: (Long, Long) -> String,
     val updatedSecAgo: (Long) -> String,
     val vehicleLateBy: (Int) -> String,
@@ -266,7 +274,7 @@ fun stringsFor(language: AppLanguage): AppStrings = when (language) {
 }
 
 private val RussianStrings = AppStrings(
-    appName = "OffDojade",
+    appName = "PyrTransit",
     back = "Назад",
     close = "Закрыть",
     refresh = "Обновить",
@@ -434,6 +442,12 @@ private val RussianStrings = AppStrings(
     todayLabel = "Сегодня",
     tomorrowLabel = "Завтра",
     dayAfterTomorrowLabel = "Послезавтра",
+    tightTransferWarning = "Короткая пересадка — транспорт может опоздать или уехать раньше",
+    offlineNoticeBanner = "Нет интернета — расписание ориентировочное, опоздания не отображаются",
+    pickOnMapLabel = "Выбрать на карте",
+    pickThisLocation = "Выбрать эту точку",
+    stopsListTab = "Список",
+    stopsMapTab = "Карта",
     clearHistory = "Очистить",
 
     ulgowyTicketTitle = "Льготный билет (Ulgowy 50%)",
@@ -460,6 +474,8 @@ private val RussianStrings = AppStrings(
     walkAndWait = { w, wt -> "Пройти $w мин и ждать $wt мин" },
     walkMinutesOnly = { "Пройти $it мин" },
     transferSameStop = "Пересадка на той же остановке",
+    changePlatformLabel = "Переход на другую платформу",
+    changePlatformAndWait = { w -> "Другая платформа • ждать $w мин" },
     updatedMinSecAgo = { m, sec -> "Обновлено: $m мин $sec сек назад" },
     updatedSecAgo = { sec -> "Обновлено: $sec сек назад" },
     vehicleLateBy = { "Опаздывает на +$it мин" },
@@ -473,7 +489,7 @@ private val RussianStrings = AppStrings(
 )
 
 private val UkrainianStrings = AppStrings(
-    appName = "OffDojade",
+    appName = "PyrTransit",
     back = "Назад",
     close = "Закрити",
     refresh = "Оновити",
@@ -641,6 +657,12 @@ private val UkrainianStrings = AppStrings(
     todayLabel = "Сьогодні",
     tomorrowLabel = "Завтра",
     dayAfterTomorrowLabel = "Післязавтра",
+    tightTransferWarning = "Коротка пересадка — транспорт може запізнитися або поїхати раніше",
+    offlineNoticeBanner = "Немає інтернету — розклад орієнтовний, запізнення не відображаються",
+    pickOnMapLabel = "Вибрати на мапі",
+    pickThisLocation = "Вибрати цю точку",
+    stopsListTab = "Список",
+    stopsMapTab = "Мапа",
     clearHistory = "Очистити",
 
     ulgowyTicketTitle = "Пільговий квиток (Ulgowy 50%)",
@@ -667,6 +689,8 @@ private val UkrainianStrings = AppStrings(
     walkAndWait = { w, wt -> "Пройти $w хв і чекати $wt хв" },
     walkMinutesOnly = { "Пройти $it хв" },
     transferSameStop = "Пересадка на тій самій зупинці",
+    changePlatformLabel = "Перехід на іншу платформу",
+    changePlatformAndWait = { w -> "Інша платформа • чекати $w хв" },
     updatedMinSecAgo = { m, sec -> "Оновлено: $m хв $sec сек тому" },
     updatedSecAgo = { sec -> "Оновлено: $sec сек тому" },
     vehicleLateBy = { "Запізнюється на +$it хв" },
@@ -680,7 +704,7 @@ private val UkrainianStrings = AppStrings(
 )
 
 private val PolishStrings = AppStrings(
-    appName = "OffDojade",
+    appName = "PyrTransit",
     back = "Wstecz",
     close = "Zamknij",
     refresh = "Odśwież",
@@ -848,6 +872,12 @@ private val PolishStrings = AppStrings(
     todayLabel = "Dziś",
     tomorrowLabel = "Jutro",
     dayAfterTomorrowLabel = "Pojutrze",
+    tightTransferWarning = "Krótka przesiadka — pojazd może się spóźnić lub odjechać wcześniej",
+    offlineNoticeBanner = "Brak internetu — rozkład orientacyjny, opóźnienia nie są widoczne",
+    pickOnMapLabel = "Wybierz na mapie",
+    pickThisLocation = "Wybierz ten punkt",
+    stopsListTab = "Lista",
+    stopsMapTab = "Mapa",
     clearHistory = "Wyczyść",
 
     ulgowyTicketTitle = "Bilet ulgowy (50%)",
@@ -874,6 +904,8 @@ private val PolishStrings = AppStrings(
     walkAndWait = { w, wt -> "Idź $w min i czekaj $wt min" },
     walkMinutesOnly = { "Idź $it min" },
     transferSameStop = "Przesiadka na tym samym przystanku",
+    changePlatformLabel = "Przejście na inny peron",
+    changePlatformAndWait = { w -> "Inny peron • czekać $w min" },
     updatedMinSecAgo = { m, sec -> "Zaktualizowano: $m min $sec s temu" },
     updatedSecAgo = { sec -> "Zaktualizowano: $sec s temu" },
     vehicleLateBy = { "Opóźnienie +$it min" },
@@ -887,7 +919,7 @@ private val PolishStrings = AppStrings(
 )
 
 private val EnglishStrings = AppStrings(
-    appName = "OffDojade",
+    appName = "PyrTransit",
     back = "Back",
     close = "Close",
     refresh = "Refresh",
@@ -1055,6 +1087,12 @@ private val EnglishStrings = AppStrings(
     todayLabel = "Today",
     tomorrowLabel = "Tomorrow",
     dayAfterTomorrowLabel = "In 2 days",
+    tightTransferWarning = "Tight transfer — vehicle may be delayed or depart early",
+    offlineNoticeBanner = "Offline mode — static schedule only, live delays unavailable",
+    pickOnMapLabel = "Pick on map",
+    pickThisLocation = "Choose this location",
+    stopsListTab = "List",
+    stopsMapTab = "Map",
     clearHistory = "Clear",
 
     ulgowyTicketTitle = "Reduced ticket (Ulgowy 50%)",
@@ -1081,6 +1119,8 @@ private val EnglishStrings = AppStrings(
     walkAndWait = { w, wt -> "Walk $w min & wait $wt min" },
     walkMinutesOnly = { "Walk $it min" },
     transferSameStop = "Transfer at the same stop",
+    changePlatformLabel = "Change platform",
+    changePlatformAndWait = { w -> "Other platform • wait $w min" },
     updatedMinSecAgo = { m, sec -> "Updated: $m min $sec s ago" },
     updatedSecAgo = { sec -> "Updated: $sec s ago" },
     vehicleLateBy = { "Delayed by +$it min" },
@@ -1094,7 +1134,7 @@ private val EnglishStrings = AppStrings(
 )
 
 private val GermanStrings = AppStrings(
-    appName = "OffDojade",
+    appName = "PyrTransit",
     back = "Zurück",
     close = "Schließen",
     refresh = "Aktualisieren",
@@ -1262,6 +1302,12 @@ private val GermanStrings = AppStrings(
     todayLabel = "Heute",
     tomorrowLabel = "Morgen",
     dayAfterTomorrowLabel = "Übermorgen",
+    tightTransferWarning = "Knapper Umstieg — Fahrzeug kann verspätet sein oder früher abfahren",
+    offlineNoticeBanner = "Offline — nur statischer Fahrplan ohne Echtzeit-Verspätungen",
+    pickOnMapLabel = "Auf Karte wählen",
+    pickThisLocation = "Diesen Punkt wählen",
+    stopsListTab = "Liste",
+    stopsMapTab = "Karte",
     clearHistory = "Löschen",
 
     ulgowyTicketTitle = "Ermäßigtes Ticket (Ulgowy 50%)",
@@ -1288,6 +1334,8 @@ private val GermanStrings = AppStrings(
     walkAndWait = { w, wt -> "$w Min. gehen & $wt Min. warten" },
     walkMinutesOnly = { "$it Min. gehen" },
     transferSameStop = "Umstieg an derselben Haltestelle",
+    changePlatformLabel = "Bahnsteig wechseln",
+    changePlatformAndWait = { w -> "Anderer Bahnsteig • $w Min. warten" },
     updatedMinSecAgo = { m, sec -> "Aktualisiert: vor $m Min. $sec Sek." },
     updatedSecAgo = { sec -> "Aktualisiert: vor $sec Sek." },
     vehicleLateBy = { "+$it Min. Verspätung" },

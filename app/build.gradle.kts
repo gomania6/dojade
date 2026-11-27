@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -22,11 +24,36 @@ android {
         resourceConfigurations += listOf("ru", "uk", "pl", "en", "de")
     }
 
+    signingConfigs {
+        create("release") {
+            val propsFile = rootProject.file("keystore.properties")
+            val props = Properties()
+            if (propsFile.exists()) {
+                propsFile.inputStream().use { props.load(it) }
+            }
+            val ksPath = System.getenv("KEYSTORE_PATH") ?: props.getProperty("storeFile")
+            val ksPass = System.getenv("KEYSTORE_PASSWORD") ?: props.getProperty("storePassword")
+            val kAlias = System.getenv("KEY_ALIAS") ?: props.getProperty("keyAlias")
+            val kPass = System.getenv("KEY_PASSWORD") ?: props.getProperty("keyPassword")
+            if (!ksPath.isNullOrBlank() && !ksPass.isNullOrBlank() && !kAlias.isNullOrBlank() && !kPass.isNullOrBlank()) {
+                storeFile = rootProject.file(ksPath)
+                storePassword = ksPass
+                keyAlias = kAlias
+                keyPassword = kPass
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile?.exists() == true) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
             ndk {
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a")
             }

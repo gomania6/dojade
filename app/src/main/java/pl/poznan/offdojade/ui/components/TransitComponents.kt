@@ -253,7 +253,7 @@ fun LineBadge(
     modifier: Modifier = Modifier
 ) {
     val s = LocalStrings.current
-    val isNightBus = !isTram && TransportMode.isNightLine(shortName)
+    val isNightBus = TransportMode.isNightLine(shortName)
     val parsedColor = if (isNightBus) {
         NightBusWhite
     } else {

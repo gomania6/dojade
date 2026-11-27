@@ -155,8 +155,11 @@ class RaptorEngine {
         var cursorTime = departureTimeSec
         var iterations = 0
         val maxIterations = if (isEvening) EVENING_MAX_TIMELINE_ITERATIONS else MAX_TIMELINE_ITERATIONS
+        // Собираем с запасом, чтобы после Парето-фильтрации (pruneDominatedJourneys) и фильтра
+        // 2+ пересадок в результате стабильно оставалось запрошенное число маршрутов (limit = 8).
+        val collectTarget = (limit * 2).coerceAtLeast(limit + 6)
 
-        while (collectedByFirstTrip.size < limit && cursorTime <= maxWindowEnd && iterations < maxIterations) {
+        while (collectedByFirstTrip.size < collectTarget && cursorTime <= maxWindowEnd && iterations < maxIterations) {
             iterations++
             val batch = searchDiverseAtTime(
                 data = data,
@@ -365,6 +368,11 @@ class RaptorEngine {
         val eveningFootpathOverride = if (isEvening) EVENING_MAX_TRANSFER_WALK_METERS else null
 
         // 1. Основной проход со всеми разрешёнными видами транспорта
+        val bestMaxWaitOverride = if (tripSettings.routePreference == RoutePreference.BEST && !isEvening) {
+            BEST_MAX_TRANSFER_WAIT_SEC
+        } else {
+            null
+        }
         var primary = executeRaptor(
             data = data,
             query = query,
@@ -373,10 +381,11 @@ class RaptorEngine {
             maxTransfers = maxTransfers,
             tripSettings = tripSettings,
             alternativeTag = JourneyAlternativeTag.STANDARD,
-            maxFootpathMetersOverride = eveningFootpathOverride
+            maxFootpathMetersOverride = eveningFootpathOverride,
+            maxTransferWaitSecOverride = bestMaxWaitOverride
         )
-        // Если в «Удобном» / «Лучшем» режиме со строгим лимитом пешей пересадки ничего не найдено —
-        // мягко расширяем радиус пересадки до 300 м (или 450 м вечером), чтобы не оставить пользователя без маршрута
+        // Если в «Удобном» / «Лучшем» режиме со строгим лимитом пешей пересадки или ожидания ничего не найдено —
+        // мягко ослабляем ограничения, чтобы не оставить пользователя без маршрута
         if (primary.isEmpty() && eveningFootpathOverride == null && tripSettings.routePreference != RoutePreference.FASTEST) {
             primary = executeRaptor(
                 data = data,
@@ -386,12 +395,17 @@ class RaptorEngine {
                 maxTransfers = maxTransfers,
                 tripSettings = tripSettings,
                 alternativeTag = JourneyAlternativeTag.STANDARD,
-                maxFootpathMetersOverride = MAX_TRANSFER_WALK_FASTEST_METERS
+                maxFootpathMetersOverride = MAX_TRANSFER_WALK_FASTEST_METERS,
+                maxTransferWaitSecOverride = null
             )
         }
         candidates.addAll(primary)
 
         // 2. Разнообразие видов транспорта: если разрешены и трамваи, и автобусы — пробуем отдельные проходы
+        // Ограничиваем альтернативы окном +90 мин от основного рейса, чтобы в утренний поиск в 9:20
+        // не подмешивался ночной автобус в 23:00!
+        val primaryMinDep = primary.minOfOrNull { it.transitDepartureTimeSec }
+        val maxAltDepSec = primaryMinDep?.let { it + MAX_MODAL_ALT_DELAY_SEC }
         val tramsEnabled = TransportMode.TRAM in tripSettings.enabledTransportModes
         val busesEnabled = TransportMode.BUS in tripSettings.enabledTransportModes && !tripSettings.excludeBuses
 
@@ -413,7 +427,7 @@ class RaptorEngine {
                     maxTransfers = minOf(maxTransfers, 2),
                     tripSettings = tramSettings,
                     alternativeTag = JourneyAlternativeTag.TRAM_ONLY
-                )
+                ).filter { maxAltDepSec == null || it.transitDepartureTimeSec <= maxAltDepSec }
                 candidates.addAll(tramAlt)
             }
 
@@ -430,7 +444,7 @@ class RaptorEngine {
                     maxTransfers = minOf(maxTransfers, 1),
                     tripSettings = busSettings,
                     alternativeTag = JourneyAlternativeTag.BUS_ONLY
-                )
+                ).filter { maxAltDepSec == null || it.transitDepartureTimeSec <= maxAltDepSec }
                 candidates.addAll(busAlt)
             }
         }
@@ -760,14 +774,18 @@ class RaptorEngine {
             resolvedOriginLon = data.stopLons[originIndices[0]]
             val ownSet = originIndices.toHashSet()
             val ownAccesses = originIndices.map { OriginAccess(it, 0, 0) }
-            // Добавляем также ближайшие остановки в пешей доступности (до 500 м днём, до 650 м вечером/ночью)
-            val nearbyAccesses = findNearbyAccesses(
-                data = data,
-                lat = resolvedOriginLat,
-                lon = resolvedOriginLon,
-                maxMeters = originNearbyMeters,
-                tripSettings = tripSettings
-            ).filter { it.stopIdx !in ownSet }
+            // В режиме «Удобно» не заставляем пользователя идти пешком на другую остановку от выбранной им остановки
+            val nearbyAccesses = if (tripSettings.routePreference == RoutePreference.CONVENIENT && !isEveningOrNight) {
+                emptyList()
+            } else {
+                findNearbyAccesses(
+                    data = data,
+                    lat = resolvedOriginLat,
+                    lon = resolvedOriginLon,
+                    maxMeters = originNearbyMeters,
+                    tripSettings = tripSettings
+                ).filter { it.stopIdx !in ownSet }
+            }
             originAccesses = ownAccesses + nearbyAccesses
         } else {
             originAccesses = findNearbyAccesses(
@@ -1038,7 +1056,8 @@ class RaptorEngine {
         maxTransfers: Int,
         tripSettings: TripSettings,
         alternativeTag: JourneyAlternativeTag,
-        maxFootpathMetersOverride: Int? = null
+        maxFootpathMetersOverride: Int? = null,
+        maxTransferWaitSecOverride: Int? = null
     ): List<TransitJourney> {
         val originAccesses = query.originAccesses
         val targetStopIndices = query.targetStopIndices
@@ -1048,10 +1067,10 @@ class RaptorEngine {
         val rounds = maxTransfers + 1
         val stopCount = data.stopCount
         val patternCount = data.patternCount
-        val minTransferSec = if (tripSettings.routePreference == RoutePreference.FASTEST) {
-            maxOf(MIN_SAME_STOP_TRANSFER_SEC, minOf(tripSettings.minTransferSeconds, 90))
-        } else {
-            maxOf(MIN_SAME_STOP_TRANSFER_SEC, tripSettings.minTransferSeconds)
+        val minTransferSec = when (tripSettings.routePreference) {
+            RoutePreference.FASTEST -> maxOf(MIN_SAME_STOP_TRANSFER_SEC, minOf(tripSettings.minTransferSeconds, 90))
+            RoutePreference.BEST -> maxOf(BEST_MIN_TRANSFER_SEC, tripSettings.minTransferSeconds)
+            RoutePreference.CONVENIENT -> maxOf(MIN_SAME_STOP_TRANSFER_SEC, tripSettings.minTransferSeconds)
         }
         val maxFootpathMeters = maxFootpathMetersOverride ?: maxTransferWalkMeters(tripSettings.routePreference)
 
@@ -1093,7 +1112,9 @@ class RaptorEngine {
             val arrival = departureTimeSec + access.walkSeconds
             if (arrival < tau[0][access.stopIdx]) {
                 tau[0][access.stopIdx] = arrival
-                bestArrival[access.stopIdx] = arrival
+                if (!isTargetStop[access.stopIdx]) {
+                    bestArrival[access.stopIdx] = arrival
+                }
                 parentType[0][access.stopIdx] = PARENT_ORIGIN
                 parentWalkDist[0][access.stopIdx] = access.distanceMeters
                 markedStops[access.stopIdx] = true
@@ -1108,7 +1129,9 @@ class RaptorEngine {
                 val fpEnd = data.footpathOffsets[startStop + 1]
                 for (f in fpStart until fpEnd) {
                     val toStop = data.footpathToStop[f]
-                    if (!allowedStop[toStop]) continue
+                    // Не переходим пешком на целевую остановку в раунде 0, иначе bestArrival[target]
+                    // обрежет (pruning) все трамваи/автобусы на коротких перегонах вроде Rondo Kaponiera -> Most Teatralny!
+                    if (!allowedStop[toStop] || isTargetStop[toStop]) continue
                     val arr = departureTimeSec + data.footpathWalkSec[f]
                     if (arr < tau[0][toStop]) {
                         tau[0][toStop] = arr
@@ -1222,20 +1245,24 @@ class RaptorEngine {
                         if (candidateTrip != -1) {
                             val candDelay = tripDelays[data.tripIds[candidateTrip]] ?: 0
                             val candDep = data.tripDepartureAt(candidateTrip, pos) + candDelay
-                            val curDep = if (currentTrip != -1) {
-                                data.tripDepartureAt(currentTrip, pos) + currentTripDelay
-                            } else {
-                                INF
-                            }
-                            val betterBoardOnSameTrip = candidateTrip == currentTrip && boardStop != -1 && (
-                                (parentType[k - 1][boardStop] == PARENT_FOOTPATH && parentType[k - 1][stop] != PARENT_FOOTPATH) ||
-                                    (parentWalkDist[k - 1][stop] < parentWalkDist[k - 1][boardStop])
-                                )
-                            if (currentTrip == -1 || candDep < curDep || betterBoardOnSameTrip) {
-                                currentTrip = candidateTrip
-                                currentTripDelay = candDelay
-                                boardStop = stop
-                                boardPos = pos
+                            val withinMaxTransferWait = k == 1 || maxTransferWaitSecOverride == null ||
+                                (candDep - prevArrAtStop) <= maxTransferWaitSecOverride
+                            if (withinMaxTransferWait) {
+                                val curDep = if (currentTrip != -1) {
+                                    data.tripDepartureAt(currentTrip, pos) + currentTripDelay
+                                } else {
+                                    INF
+                                }
+                                val betterBoardOnSameTrip = candidateTrip == currentTrip && boardStop != -1 && (
+                                    (parentType[k - 1][boardStop] == PARENT_FOOTPATH && parentType[k - 1][stop] != PARENT_FOOTPATH) ||
+                                        (parentWalkDist[k - 1][stop] < parentWalkDist[k - 1][boardStop])
+                                    )
+                                if (currentTrip == -1 || candDep < curDep || betterBoardOnSameTrip) {
+                                    currentTrip = candidateTrip
+                                    currentTripDelay = candDelay
+                                    boardStop = stop
+                                    boardPos = pos
+                                }
                             }
                         }
                     }
@@ -1713,14 +1740,16 @@ class RaptorEngine {
         private const val PARENT_TRANSIT = 2
         private const val PARENT_FOOTPATH = 3
         private const val MIN_SAME_STOP_TRANSFER_SEC = 60
+        private const val BEST_MIN_TRANSFER_SEC = 3 * 60
+        private const val BEST_MAX_TRANSFER_WAIT_SEC = 20 * 60
         private const val MAX_EXPECTED_DELAY_SEC = 20 * 60
         private const val MAX_EXPECTED_EARLY_SEC = 3 * 60
 
         private const val UPCOMING_SEARCH_HORIZON_SEC = 8 * 3600
         private const val EVENING_SEARCH_HORIZON_SEC = 10 * 3600
         private const val EMPTY_STEP_SEC = 15 * 60
-        private const val MAX_TIMELINE_ITERATIONS = 32
-        private const val EVENING_MAX_TIMELINE_ITERATIONS = 42
+        private const val MAX_TIMELINE_ITERATIONS = 48
+        private const val EVENING_MAX_TIMELINE_ITERATIONS = 56
 
         private const val EARLIER_SEARCH_HORIZON_SEC = 3 * 3600
         private const val EARLIER_STEP_SEC = 10 * 60
@@ -1741,5 +1770,6 @@ class RaptorEngine {
         private const val EVENING_MAX_TRANSFER_WALK_METERS = 450
         private const val MIN_SIMPLE_ROUTES_TO_HIDE_TWO_TRANSFERS = 3
         private const val FASTEST_TWO_TRANSFER_MIN_SAVING_SEC = 8 * 60
+        private const val MAX_MODAL_ALT_DELAY_SEC = 90 * 60
     }
 }

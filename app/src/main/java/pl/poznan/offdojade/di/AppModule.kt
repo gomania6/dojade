@@ -47,9 +47,9 @@ val appModule = module {
     single { TransitGraphRepository(get()) }
 
     viewModel { OnboardingViewModel(get(), get(), get(), get(), get()) }
-    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get()) }
+    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { RouteResultsViewModel(get(), get(), get(), get(), get()) }
     viewModel { RouteDetailsViewModel(get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get()) }
-    viewModel { TimetablesViewModel(get()) }
+    viewModel { TimetablesViewModel(get(), get()) }
 }

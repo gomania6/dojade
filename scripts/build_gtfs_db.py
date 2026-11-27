@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ночной сборщик готовой SQLite-базы расписаний ZTM Poznań для OffDojade.
+Ночной сборщик готовой SQLite-базы расписаний ZTM Poznań для PyrTransit.
 
 Что делает:
 1. Скачивает свежий GTFS ZIP с сервера ZTM Poznań (https://www.ztm.poznan.pl/pl/dla-deweloperow/getGTFSFile).
@@ -205,7 +205,7 @@ def download_gtfs_zip(url: str, dest: Path) -> None:
         url,
         headers={
             "Accept": "application/octet-stream",
-            "User-Agent": "OffDojade-ScheduleBuilder/1.0",
+            "User-Agent": "PyrTransit-ScheduleBuilder/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=120) as resp, dest.open("wb") as out:

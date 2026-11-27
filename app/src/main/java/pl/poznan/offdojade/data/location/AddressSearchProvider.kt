@@ -83,7 +83,7 @@ class AddressSearchProvider(
 
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "OffDojade-Poznan/1.0")
+            .header("User-Agent", "PyrTransit-Poznan/1.0")
             .header("Accept", "application/json")
             .build()
 
@@ -155,7 +155,7 @@ class AddressSearchProvider(
 
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "OffDojade-Poznan/1.0")
+            .header("User-Agent", "PyrTransit-Poznan/1.0")
             .header("Accept", "application/json")
             .build()
 

@@ -39,5 +39,5 @@ jobs:
           else
             gh release create "$TAG" poznan.pmtiles -R "$REPO" \
               --title "Poznań Offline Vector Map (PMTiles)" \
-              --notes "Офлайн-векторная карта Познани и агломерации для OffDojade."
+              --notes "Офлайн-векторная карта Познани и агломерации для PyrTransit."
           fi

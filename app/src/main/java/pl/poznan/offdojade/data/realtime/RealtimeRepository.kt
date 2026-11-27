@@ -31,7 +31,9 @@ data class LiveVehicle(
     val latitude: Double,
     val longitude: Double,
     val bearing: Float?,
-    val timestampEpochSec: Long?
+    val timestampEpochSec: Long?,
+    val currentStopId: String? = null,
+    val currentStopSequence: Int? = null
 )
 
 /**
@@ -104,7 +106,9 @@ class RealtimeRepository(
                         latitude = pos.latitude.toDouble(),
                         longitude = pos.longitude.toDouble(),
                         bearing = pos.bearing,
-                        timestampEpochSec = vp.timestamp
+                        timestampEpochSec = vp.timestamp,
+                        currentStopId = vp.stop_id,
+                        currentStopSequence = vp.current_stop_sequence
                     )
                 }
             } catch (ce: CancellationException) {

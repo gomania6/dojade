@@ -4,10 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -15,12 +17,14 @@ import pl.poznan.offdojade.config.AppConfig
 import pl.poznan.offdojade.data.local.PreferencesRepository
 import pl.poznan.offdojade.data.location.LocationProvider
 import pl.poznan.offdojade.data.realtime.RealtimeRepository
+import pl.poznan.offdojade.data.realtime.RealtimeStatus
 import pl.poznan.offdojade.domain.model.JourneyLeg
 import pl.poznan.offdojade.domain.model.RouteEndpoint
 import pl.poznan.offdojade.domain.model.RouteSearchRequest
 import pl.poznan.offdojade.domain.model.TimeQueryMode
 import pl.poznan.offdojade.domain.model.TransitJourney
 import pl.poznan.offdojade.domain.model.TripSettings
+import pl.poznan.offdojade.domain.routing.CachedRouteResults
 import pl.poznan.offdojade.domain.routing.RaptorData
 import pl.poznan.offdojade.domain.routing.RaptorEngine
 import pl.poznan.offdojade.domain.routing.TransitGraphRepository
@@ -60,6 +64,32 @@ class RouteResultsViewModel(
     private val _uiState = MutableStateFlow(RouteResultsUiState())
     val uiState: StateFlow<RouteResultsUiState> = _uiState.asStateFlow()
 
+    val realtimeStatus: StateFlow<RealtimeStatus> = realtimeRepository.status
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RealtimeStatus.Offline())
+
+    /** Карта всех отслеживаемых рейсов (`tripId` и его суффикс без префикса сервиса -> `liveDelaySec`) */
+    val liveTripDelays: StateFlow<Map<String, Int>> = realtimeRepository.status
+        .map {
+            val vehicles = realtimeRepository.vehicles.value
+            val delays = realtimeRepository.tripDelaysSec
+            buildMap((vehicles.size + delays.size) * 2) {
+                delays.forEach { (tripId, delay) ->
+                    put(tripId, delay)
+                    val core = tripId.substringAfter('_', "")
+                    if (core.isNotEmpty() && core !in this) put(core, delay)
+                }
+                vehicles.forEach { v ->
+                    val tid = v.tripId
+                    if (!tid.isNullOrBlank()) {
+                        if (tid !in this) put(tid, 0)
+                        val core = tid.substringAfter('_', "")
+                        if (core.isNotEmpty() && core !in this) put(core, 0)
+                    }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
     private var cachedOriginLat: Double = AppConfig.POZNAN_CENTER_LAT
     private var cachedOriginLon: Double = AppConfig.POZNAN_CENTER_LON
     private var currentTripSettings: TripSettings = TripSettings()
@@ -78,13 +108,13 @@ class RouteResultsViewModel(
                     currentTripSettings = tripSettings
                     _uiState.update { it.copy(hasActiveFilters = tripSettings.hasActiveFilters) }
                     if (changed && activeRequest != null) {
-                        searchActiveRequest()
+                        searchActiveRequest(forceRefresh = true)
                     }
                 }
         }
     }
 
-    fun searchActiveRequest() {
+    fun searchActiveRequest(forceRefresh: Boolean = false) {
         val request = transitGraphRepository.activeSearchRequest.value ?: activeRequest ?: return
         activeRequest = request
 
@@ -92,6 +122,39 @@ class RouteResultsViewModel(
             val nowSec = LocalTime.now(ZoneId.of("Europe/Warsaw")).toSecondOfDay()
             val settings = preferencesRepository.getAppSettings().tripSettings
             currentTripSettings = settings
+
+            if (!forceRefresh) {
+                val cached = transitGraphRepository.cachedRouteResults
+                if (cached != null && cached.request == request && cached.tripSettings == settings && cached.journeys.isNotEmpty()) {
+                    cachedOriginLat = cached.originLat
+                    cachedOriginLon = cached.originLon
+                    loadedDayOffset = cached.loadedDayOffset
+                    maxDayOffset = cached.maxDayOffset
+                    val today = LocalDate.now(ZoneId.of("Europe/Warsaw"))
+                    activeDayGraph = if (loadedDayOffset == 0) {
+                        transitGraphRepository.ensureLoadedForToday()
+                    } else {
+                        transitGraphRepository.buildGraphForDate(today.plusDays(loadedDayOffset.toLong()))
+                    }
+                    _uiState.update {
+                        it.copy(
+                            fromStopName = request.from?.displayName,
+                            targetStopName = request.to.displayName,
+                            isLoading = false,
+                            isLoadingEarlier = false,
+                            isLoadingLater = false,
+                            noMoreEarlier = cached.noMoreEarlier,
+                            noMoreLater = cached.noMoreLater,
+                            referenceNowSec = cached.referenceNowSec,
+                            journeys = cached.journeys,
+                            searchDurationMs = cached.searchDurationMs,
+                            error = null,
+                            hasActiveFilters = settings.hasActiveFilters
+                        )
+                    }
+                    return@launch
+                }
+            }
 
             _uiState.update {
                 it.copy(
@@ -167,7 +230,7 @@ class RouteResultsViewModel(
                         arriveByTimeSec = planned.timeSec,
                         tripDelays = activeDelays,
                         tripSettings = settings,
-                        limit = 5,
+                        limit = INITIAL_RESULTS_LIMIT,
                         originName = originName,
                         targetLat = targetAddr?.latitude,
                         targetLon = targetAddr?.longitude,
@@ -183,7 +246,7 @@ class RouteResultsViewModel(
                         departureTimeSec = queryTimeSec,
                         tripDelays = activeDelays,
                         tripSettings = settings,
-                        limit = 5,
+                        limit = INITIAL_RESULTS_LIMIT,
                         originName = originName,
                         targetLat = targetAddr?.latitude,
                         targetLon = targetAddr?.longitude,
@@ -211,7 +274,7 @@ class RouteResultsViewModel(
                             departureTimeSec = 0,
                             tripDelays = emptyMap(),
                             tripSettings = settings,
-                            limit = 5,
+                            limit = INITIAL_RESULTS_LIMIT,
                             originName = originName,
                             targetLat = targetAddr?.latitude,
                             targetLon = targetAddr?.longitude,
@@ -221,13 +284,17 @@ class RouteResultsViewModel(
                 }
             }
 
+            val durationMs = results.firstOrNull()?.searchDurationMs ?: 0L
             _uiState.update {
                 it.copy(
                     isLoading = false,
                     journeys = results,
-                    searchDurationMs = results.firstOrNull()?.searchDurationMs ?: 0L,
+                    searchDurationMs = durationMs,
                     error = if (results.isEmpty()) RouteSearchError.NO_ROUTES_FOUND else null
                 )
+            }
+            if (results.isNotEmpty()) {
+                persistCache(request, settings, results, durationMs, nowSec, noMoreEarlier = false, noMoreLater = false)
             }
         }
     }
@@ -272,9 +339,19 @@ class RouteResultsViewModel(
 
             _uiState.update { state ->
                 val merged = (earlier + state.journeys).distinctBy { it.id }
+                val noMore = earlier.isEmpty()
+                persistCache(
+                    request = request,
+                    settings = currentTripSettings,
+                    journeys = merged,
+                    searchDurationMs = state.searchDurationMs,
+                    referenceNowSec = state.referenceNowSec,
+                    noMoreEarlier = noMore,
+                    noMoreLater = state.noMoreLater
+                )
                 state.copy(
                     isLoadingEarlier = false,
-                    noMoreEarlier = earlier.isEmpty(),
+                    noMoreEarlier = noMore,
                     journeys = merged
                 )
             }
@@ -355,9 +432,19 @@ class RouteResultsViewModel(
 
             _uiState.update { state ->
                 val merged = (state.journeys + later).distinctBy { it.id }
+                val noMore = later.isEmpty() && loadedDayOffset >= maxDayOffset
+                persistCache(
+                    request = request,
+                    settings = currentTripSettings,
+                    journeys = merged,
+                    searchDurationMs = state.searchDurationMs,
+                    referenceNowSec = state.referenceNowSec,
+                    noMoreEarlier = state.noMoreEarlier,
+                    noMoreLater = noMore
+                )
                 state.copy(
                     isLoadingLater = false,
-                    noMoreLater = later.isEmpty() && loadedDayOffset >= maxDayOffset,
+                    noMoreLater = noMore,
                     journeys = merged
                 )
             }
@@ -394,5 +481,33 @@ class RouteResultsViewModel(
 
     fun selectJourney(journey: TransitJourney) {
         transitGraphRepository.selectJourney(journey)
+    }
+
+    private fun persistCache(
+        request: RouteSearchRequest,
+        settings: TripSettings,
+        journeys: List<TransitJourney>,
+        searchDurationMs: Long,
+        referenceNowSec: Int,
+        noMoreEarlier: Boolean,
+        noMoreLater: Boolean
+    ) {
+        transitGraphRepository.cachedRouteResults = CachedRouteResults(
+            request = request,
+            tripSettings = settings,
+            journeys = journeys,
+            searchDurationMs = searchDurationMs,
+            referenceNowSec = referenceNowSec,
+            loadedDayOffset = loadedDayOffset,
+            maxDayOffset = maxDayOffset,
+            noMoreEarlier = noMoreEarlier,
+            noMoreLater = noMoreLater,
+            originLat = cachedOriginLat,
+            originLon = cachedOriginLon
+        )
+    }
+
+    companion object {
+        private const val INITIAL_RESULTS_LIMIT = 8
     }
 }

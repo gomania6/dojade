@@ -17,6 +17,7 @@ local.properties
 # Keystores & secrets
 *.jks
 *.keystore
+keystore.properties
 
 # OS / Python cache
 .DS_Store
